@@ -1,0 +1,45 @@
+{
+  "cli": {
+    "version": ">= 12.0.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "ios": {
+        "simulator": true,
+        "buildConfiguration": "Debug"
+      },
+      "env": {
+        "EXPO_PUBLIC_GROK_API_KEY": ""
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "ios": {
+        "buildConfiguration": "Release"
+      },
+      "channel": "preview",
+      "env": {
+        "EXPO_PUBLIC_GROK_API_KEY": ""
+      }
+    },
+    "production": {
+      "ios": {
+        "buildConfiguration": "Release"
+      },
+      "channel": "production",
+      "autoIncrement": "buildNumber"
+    }
+  },
+  "submit": {
+    "production": {
+      "ios": {
+        "appleId": "",
+        "ascAppId": "",
+        "appleTeamId": ""
+      }
+    }
+  }
+}

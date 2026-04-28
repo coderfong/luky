@@ -1,30 +1,45 @@
 {
   "expo": {
-    "name": "blessed-numbers",
+    "name": "Blessed Numbers",
     "slug": "blessed-numbers",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
+    "scheme": "blessednumbers",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#FDF6EC"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": false,
+      "bundleIdentifier": "com.blessednumbers.app",
+      "buildNumber": "1",
+      "minimumOsVersion": "16.0",
+      "infoPlist": {
+        "CFBundleDisplayName": "Blessed Numbers",
+        "NSUserTrackingUsageDescription": "We do not track you. This permission is not used."
+      }
     },
-    "android": {
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
-      },
-      "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
-    },
-    "web": {
-      "favicon": "./assets/favicon.png"
+    "platforms": [
+      "ios"
+    ],
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#FDF6EC",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200
+        }
+      ],
+      "expo-font"
+    ],
+    "experiments": {
+      "typedRoutes": true
     }
   }
 }
