@@ -33,7 +33,9 @@ export type AnalyticsEventName =
   | 'premium_preview_unlocked'
   | 'paywall_reached'
   | 'paywall_converted'
-  | 'paywall_dismissed';
+  | 'paywall_dismissed'
+  | 'almanac_visit'
+  | 'almanac_strip_tapped';
 
 export interface AnalyticsEvent {
   name: AnalyticsEventName;

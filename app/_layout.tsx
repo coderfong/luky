@@ -70,16 +70,13 @@ export default function RootLayout() {
           headerBackButtonMenuEnabled: false,
         }}
       >
-        <Stack.Screen name="onboarding/welcome" options={{ headerShown: false }} />
-        <Stack.Screen name="onboarding/profile" options={{ headerShown: false }} />
-        <Stack.Screen name="onboarding/personalise" options={{ headerShown: false }} />
-        <Stack.Screen name="onboarding/disclaimer" options={{ headerShown: false }} />
-        <Stack.Screen name="onboarding/first-reading" options={{ headerShown: false }} />
+        <Stack.Screen name="onboarding" options={{ headerShown: false }} />
         <Stack.Screen name="paywall" options={{ headerShown: false, presentation: 'modal' }} />
         <Stack.Screen name="index" options={{ headerShown: false }} />
         <Stack.Screen name="number-select" options={{ headerShown: false }} />
         <Stack.Screen name="draw" options={{ headerShown: false }} />
         <Stack.Screen name="analysis" options={{ headerShown: false }} />
+        <Stack.Screen name="almanac" options={{ headerShown: false }} />
         <Stack.Screen
           name="history"
           options={{ title: Strings.history.title }}

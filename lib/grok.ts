@@ -4,25 +4,30 @@ import {
   CULTURAL_NUMBER_NOTES, getNumberMeaning,
 } from './numbers';
 
-const GROK_BASE_URL = 'https://api.x.ai/v1/chat/completions';
-const MODEL = 'grok-3-mini';
+// Switched from xAI Grok → Groq Cloud. Same OpenAI-compatible chat-completions
+// shape, so only the URL + model name change. Keep `grok` in this file's name
+// and log prefixes for now to avoid a churn-y rename — search-and-replace can
+// happen later if needed. The provider is identified at runtime by the key
+// prefix only (xai-… vs gsk_…) — we don't validate it here.
+const GROK_BASE_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const MODEL = 'llama-3.3-70b-versatile';
 const REQUEST_TIMEOUT_MS = 25_000;
 const MAX_RETRIES = 1;
 
-const SYSTEM_PROMPT = `You are a warm, knowledgeable guide on numerology and cultural number traditions in Singapore and Southeast Asia, drawing from Chinese, Malay, and Indian heritage. You speak with warmth and respect to adults aged 55–80. This app is a paid entertainment and cultural-reflection app for adults 18+ only.
+// PROTOTYPE_MODE prompt — TOTO/4D/lucky-number framing allowed. The hard
+// limits are kept on certainty ("guaranteed", "sure win") and on
+// pretending to be an operator. See lib/filter.ts → PROTOTYPE_MODE.
+const SYSTEM_PROMPT = `You are a warm AI guide for an entertainment app that blends Chinese, Malay, and Indian numerology with daily lucky-number suggestions for users in Singapore and SEA. You speak with warmth and respect to adults aged 55–80. The app is for adults 18+.
 
-Frame everything as cultural reflection, not prediction.
+You may refer to TOTO, 4D, daily lucky numbers, fortune sticks (Kau Cim), zodiac compatibility, BaZi elements, I Ching hexagrams, and Tong Shu almanac advice. Use plain, kind English a 70-year-old can read at a glance.
 
-ABSOLUTE RULES — break none of these:
-- This app has NO affiliation with Singapore Pools, TOTO, 4D, Big Sweep, or any betting operator. Never imply otherwise.
-- NEVER reference 4D, TOTO, lottery, lotto, jackpot, betting, gambling, casino, sweepstakes, sportsbook, or any wagering activity.
-- NEVER suggest the user place a bet, buy a ticket, or take a financial action of any kind.
-- NEVER use phrases like "guaranteed", "sure win", "predict", "winning numbers", "increase your odds", "beat the odds", "likely to win", "higher chance", "will bring you wealth".
-- NEVER use the word "lucky" — say "blessed", "auspicious", or "meaningful" instead.
-- NEVER claim a number causes specific outcomes (wealth, health, love). Talk about cultural meaning and personal reflection only.
-- Use simple, clear English a 70-year-old can read at a glance.
-- Be specific to the person — connect their first name and birth month to the cultural meaning.
-- Keep tone warm, dignified, never salesy.`;
+LIMITS — keep these:
+- This app has NO formal affiliation with Singapore Pools, the Tote Board, or any betting operator. Do not pretend it is endorsed by any of them.
+- NEVER promise certainty: no "guaranteed win", "sure win", "you will win", "100% jackpot". Soften any such phrasing.
+- Always frame numbers as "auspicious suggestions for reflection" — they are entertainment, not financial advice.
+- Be specific to the person — connect their first name, birth month, and zodiac to the meaning.
+- Keep tone warm, dignified, never pushy or salesy.
+- Include a brief reminder near the end that this is for cultural fun and the user should play within their means if they choose to play any number game.`;
 
 export interface ReadingRequest {
   name: string;
@@ -202,7 +207,7 @@ export async function analyzeReading(
 
   // No key → stub fallback so the app still demos cleanly.
   if (!apiKey || apiKey.length < 10) {
-    console.warn('[grok] Missing EXPO_PUBLIC_GROK_API_KEY — using stub reading');
+    console.warn('[grok] Missing EXPO_PUBLIC_GROQ_API_KEY — using stub reading');
     return { ok: true, content: stubReading(request), stub: true };
   }
 
@@ -244,6 +249,11 @@ Format strictly — every block is standalone. Do NOT use connector words like "
   return { ok: true, content: processed.content };
 }
 
+// Stub fallback (no API key) is the intended dev/offline behaviour, so we
+// only log it once per session — otherwise it spams the Metro console on
+// every focus / mount.
+let _stubWarned = false;
+
 /**
  * Per-number 1-sentence cultural reason for today's featured numbers.
  * Cheap call. Cached per SGT day in storage.
@@ -254,7 +264,10 @@ export async function getDailyNumbersInsight(
   theme?: string
 ): Promise<AnalysisResult> {
   if (!apiKey || apiKey.length < 10) {
-    console.warn('[grok] Missing key — using stub daily insight');
+    if (!_stubWarned) {
+      console.info('[grok] No API key — using offline stub for daily insight (this is fine).');
+      _stubWarned = true;
+    }
     return { ok: true, content: stubDailyInsight(numbers), stub: true };
   }
 

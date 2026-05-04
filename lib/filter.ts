@@ -1,10 +1,17 @@
 // Content safety guard applied before every Grok API call and after every response.
-// Grok's safety is weaker than Claude — we must catch gambling-adjacent content here.
 //
-// This is a defense-in-depth layer. The system prompt also forbids these terms,
-// but a model can still slip; this filter rejects unsafe output before users see it.
+// ─── PROTOTYPE_MODE ────────────────────────────────────────────────
+// 2026-05-03 — at the user's explicit request, prototyping with TOTO/4D
+// "lucky number" framing while we evaluate App Store strategy. The full
+// block list and the strict rewriter are *suspended* below. Flip
+// PROTOTYPE_MODE to `false` (or remove the flag) before submitting to
+// the App Store — at that point all the prior blocks must come back,
+// the disclaimer stays explicit, and the safety tests must pass.
+// See CLAUDE.md → "PROTOTYPE_MODE — gambling rules suspended".
+export const PROTOTYPE_MODE = true;
 
-const BLOCKED_TERMS = [
+// Strict block list — re-engaged when PROTOTYPE_MODE is false.
+const BLOCKED_TERMS_STRICT = [
   // gambling verbs / actors
   'gamble', 'gambling', 'gambler',
   'casino', 'casinos',
@@ -28,6 +35,23 @@ const BLOCKED_TERMS = [
   'luckiest number',
 ] as const;
 
+// Prototype block list — keeps things that would create real legal
+// exposure even in a prototype: pretending to BE an operator, claiming
+// guaranteed wins, etc. Notably DOES NOT block "toto", "4d", "lucky".
+const BLOCKED_TERMS_PROTOTYPE = [
+  // pretending to be / endorsing the actual operators is still a no
+  'singapore pools', 'sg pools', 'sgpools',
+  'tote board',
+  // never claim certainty
+  'guaranteed win', 'sure win', 'sure-win',
+  'guaranteed jackpot', 'guaranteed to win',
+  'will definitely win', 'you will win',
+] as const;
+
+const BLOCKED_TERMS: readonly string[] = PROTOTYPE_MODE
+  ? BLOCKED_TERMS_PROTOTYPE
+  : BLOCKED_TERMS_STRICT;
+
 export type FilterResult =
   | { safe: true }
   | { safe: false; reason: 'empty' | 'too_short' | 'gambling_reference' };
@@ -50,11 +74,11 @@ export function checkContent(input: string): FilterResult {
   return { safe: true };
 }
 
-// Soft-rewrite pass for AI output that *almost* slipped — replace any prediction
-// or "lucky" framing with neutral cultural-reflection language. This runs AFTER
-// checkContent has already approved the output, so it only handles edge cases
-// like casing variations the block-list missed.
-const REWRITES: Array<[RegExp, string]> = [
+// Soft-rewrite pass — runs AFTER checkContent.
+// In PROTOTYPE_MODE we keep only the minimum: rewrite "guaranteed" /
+// "sure win" claims into softer language so we never promise a win.
+// In strict mode this also rewrites "lucky" → "blessed" etc.
+const REWRITES_STRICT: Array<[RegExp, string]> = [
   [/\bguaranteed\b/gi, 'meaningful'],
   [/\bsure[-\s]?win(s|ning)?\b/gi, 'auspicious'],
   [/\bpredict(s|ed|ing)?\b/gi, 'reflects'],
@@ -63,9 +87,17 @@ const REWRITES: Array<[RegExp, string]> = [
   [/\bbeat the odds\b/gi, 'walk with care'],
   [/\bhigher chance\b/gi, 'meaningful resonance'],
   [/\blikely to win\b/gi, 'culturally auspicious'],
-  // Fallback "lucky" → "blessed" if any survived the block list (e.g. "Lucky day")
   [/\blucky\b/gi, 'blessed'],
 ];
+
+const REWRITES_PROTOTYPE: Array<[RegExp, string]> = [
+  // Never let the model promise certainty even in prototype mode.
+  [/\bguaranteed (win|jackpot)\b/gi, 'auspicious $1'],
+  [/\bsure[-\s]?win\b/gi, 'auspicious pick'],
+  [/\bwill (definitely )?win\b/gi, 'may resonate'],
+];
+
+const REWRITES = PROTOTYPE_MODE ? REWRITES_PROTOTYPE : REWRITES_STRICT;
 
 export function sanitiseEntertainment(input: string): string {
   let out = input;

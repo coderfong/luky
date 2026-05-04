@@ -30,16 +30,18 @@ export const Typography = {
   fontBody: 'SourceSans3_400Regular',
   fontBodyMedium: 'SourceSans3_600SemiBold',
 
-  // Bumped for 55–80 audience: body text is now 20pt baseline. Eyebrow/section
-  // labels stay smaller for visual hierarchy but no longer dip below 12pt.
-  sizeXS: 12,
-  sizeSM: 14,
-  sizeBase: 20,
-  sizeMD: 22,
-  sizeLG: 26,
-  sizeXL: 30,
-  size2XL: 36,
-  size3XL: 48,
+  // 55–80 audience: every size is bumped one step. Eyebrow/caption labels
+  // never drop below 14pt; body text is 22pt baseline. iOS HIG calls 17pt
+  // standard — we sit a notch above that and rely on AppText's user-scaling
+  // multiplier on top.
+  sizeXS: 14,
+  sizeSM: 16,
+  sizeBase: 22,
+  sizeMD: 24,
+  sizeLG: 28,
+  sizeXL: 32,
+  size2XL: 38,
+  size3XL: 50,
 } as const;
 
 export const Spacing = {

@@ -12,7 +12,7 @@ import { Strings } from '../constants/strings';
 import {
   INTENTIONS, IntentionId, deriveFromProfile,
   getDailyFeaturedNumbers, getDailyExtras, getNumberMeaning,
-  CULTURAL_NUMBER_NOTES,
+  CULTURAL_NUMBER_NOTES, getDailyAlmanac,
 } from '../lib/numbers';
 import {
   isOnboardingComplete, getProfile, UserProfile,
@@ -28,7 +28,13 @@ import { checkContent } from '../lib/filter';
 import { getDailyNumbersInsight } from '../lib/grok';
 import { track } from '../lib/analytics';
 
-const GROK_API_KEY = process.env.EXPO_PUBLIC_GROK_API_KEY ?? '';
+// Provider switched to Groq Cloud (was xAI Grok). New key var is
+// EXPO_PUBLIC_GROQ_API_KEY; the old name is honoured as a fallback so a
+// legacy .env keeps working until the user rotates the key.
+const GROK_API_KEY =
+  process.env.EXPO_PUBLIC_GROQ_API_KEY ??
+  process.env.EXPO_PUBLIC_GROK_API_KEY ??
+  '';
 const COUNT_OPTIONS = [1, 2, 3, 4, 5, 6];
 
 function sgtCountdown(): string {
@@ -38,6 +44,20 @@ function sgtCountdown(): string {
   const m = Math.floor((ms % 3600000) / 60000);
   const s = Math.floor((ms % 60000) / 1000);
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+// Decorative "Today's Blessing Pot" amount — symbolic, NOT a real prize.
+// Anchored on the auspicious 8s for a culturally-resonant headline number.
+// Three deterministic digits vary per SGT date so the headline shifts
+// gently day to day and feels alive.
+function dailyBlessingPot(): string {
+  const sgt = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  const seed = parseInt(sgt.toISOString().split('T')[0].replace(/-/g, ''), 10);
+  const a = (seed * 9301 + 49297) % 9;       // 0–8
+  const b = (seed * 1103 + 12345) % 9;       // 0–8
+  const c = (seed * 4391 + 7919) % 9;        // 0–8
+  // 8,abc8,888 — leading 8, then three rotating digits, trailing 888.
+  return `S$ 8,${a}${b}${c}8,888`;
 }
 
 function todayLabel(): string {
@@ -67,6 +87,7 @@ export default function HomeScreen() {
   // 3 auspicious numbers that rotate daily based on SGT date
   const featuredNumbers = useMemo(() => getDailyFeaturedNumbers(), []);
   const dailyExtras = useMemo(() => getDailyExtras(), []);
+  const almanac = useMemo(() => getDailyAlmanac(), []);
 
   // Parse the AI response into a per-number map: { 8: 'reason…', 28: 'reason…', … }
   const insightMap = useMemo<Record<number, string>>(() => {
@@ -188,15 +209,13 @@ export default function HomeScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
-  // Live countdown to SGT midnight
+  // Live countdown to SGT midnight — always ticking now that the prize-pot
+  // card on the home screen also reads it.
   useEffect(() => {
-    const dl = Math.max(0, FREE_DRAWS_PER_DAY - drawsToday);
-    const showCountdown = !!todayReading || (!premium && dl === 0);
-    if (!showCountdown) { setCountdown(''); return; }
     setCountdown(sgtCountdown());
     const id = setInterval(() => setCountdown(sgtCountdown()), 1000);
     return () => clearInterval(id);
-  }, [premium, drawsToday, todayReading]);
+  }, []);
 
   if (!ready) return null;
 
@@ -281,11 +300,18 @@ export default function HomeScreen() {
       <SafeAreaView style={styles.safe}>
         {/* Top ticker */}
         <View style={styles.ticker}>
-          <AppText style={styles.tickerText}>◉ BLESSED NUMBERS · 福 星 號</AppText>
+          <AppText
+            style={styles.tickerText}
+            numberOfLines={1}
+            ellipsizeMode="tail"
+          >
+            ◉ BLESSED NUMBERS · 福 星 號
+          </AppText>
           <TouchableOpacity
             onPress={() => router.push('/settings')}
             accessibilityRole="button"
             accessibilityLabel="Settings"
+            hitSlop={12}
           >
             <AppText style={styles.settingsIcon}>⚙</AppText>
           </TouchableOpacity>
@@ -307,6 +333,9 @@ export default function HomeScreen() {
             {firstName ? (
               <AppText style={styles.greeting}>Welcome, {firstName}</AppText>
             ) : null}
+            <View style={styles.aiBadge}>
+              <AppText style={styles.aiBadgeText}>✦ AI POWERED · NEW READING DAILY</AppText>
+            </View>
             {streak && streak.streakCount > 0 ? (
               <View
                 style={[
@@ -323,6 +352,57 @@ export default function HomeScreen() {
               </View>
             ) : null}
           </View>
+
+          {/* Today's Blessing Pot — decorative, symbolic. NOT a real prize.
+              Pure visual element matching the temple/lottery aesthetic. */}
+          <View style={styles.potCard}>
+            <View style={styles.potAura} />
+            <View style={styles.potHeader}>
+              <AppText style={styles.potEyebrow}>◉ TODAY'S BLESSING POT</AppText>
+              <AppText style={styles.potGlyph}>福</AppText>
+            </View>
+            <AppText style={styles.potAmount}>{dailyBlessingPot()}</AppText>
+            <AppText style={styles.potCaption}>
+              of good fortune energy · symbolic only
+            </AppText>
+            <View style={styles.potCountdownRow}>
+              {(() => {
+                const parts = (countdown || sgtCountdown()).split(':');
+                const labels = ['HRS', 'MIN', 'SEC'];
+                return parts.map((p, i) => (
+                  <View key={i} style={styles.potTimeBox}>
+                    <AppText style={styles.potTimeValue}>{p}</AppText>
+                    <AppText style={styles.potTimeLabel}>{labels[i]}</AppText>
+                  </View>
+                ));
+              })()}
+            </View>
+            <AppText style={styles.potDisclaimer}>
+              Resets at Singapore midnight · entertainment only
+            </AppText>
+          </View>
+
+          {/* Today's Reflection strip — single plain-language line */}
+          <TouchableOpacity
+            style={styles.almanacStrip}
+            activeOpacity={0.85}
+            onPress={() => {
+              track('almanac_strip_tapped');
+              router.push('/almanac');
+            }}
+            accessibilityRole="button"
+            accessibilityLabel={Strings.home.almanacStrip.eyebrow}
+          >
+            <AppText style={styles.almanacStripEyebrow}>{Strings.home.almanacStrip.eyebrow}</AppText>
+            <View style={styles.almanacStripBody}>
+              <AppText style={styles.almanacStripLine}>
+                {almanac.energy === 'bright' ? Strings.home.almanacStrip.bright
+                  : almanac.energy === 'steady' ? Strings.home.almanacStrip.steady
+                  : Strings.home.almanacStrip.gentle}
+              </AppText>
+              <AppText style={styles.almanacStripCta}>{Strings.home.almanacStrip.cta} →</AppText>
+            </View>
+          </TouchableOpacity>
 
           {/* Daily draw status — only shown when no reading yet */}
           {!hasReadingToday && (
@@ -400,7 +480,7 @@ export default function HomeScreen() {
               <View style={{ flex: 1 }}>
                 <AppText style={styles.featuredLabel}>TODAY'S AUSPICIOUS NUMBERS</AppText>
                 <AppText style={styles.featuredDate}>
-                  Cultural reflection · {todayLabel()}
+                  AI Powered · refreshed daily · {todayLabel()}
                 </AppText>
               </View>
               <AppText style={styles.featuredGlyph}>吉</AppText>
@@ -410,10 +490,10 @@ export default function HomeScreen() {
               {featuredNumbers.map((n, i) => (
                 <View key={i} style={styles.featuredBallItem}>
                   <NumberBall number={n} size={68} variant="red" />
-                  <AppText style={styles.featuredBallNote} numberOfLines={2}>
+                  <AppText style={styles.featuredBallNote}>
                     {CULTURAL_NUMBER_NOTES[n] ?? getNumberMeaning(n)}
                   </AppText>
-                  <AppText style={styles.featuredBallMeaning} numberOfLines={4}>
+                  <AppText style={styles.featuredBallMeaning}>
                     {insightLoading
                       ? '· · ·'
                       : (insightMap[n] ?? '')}
@@ -647,8 +727,10 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary, borderRadius: 6,
   },
   tickerText: {
+    flex: 1,
     fontFamily: 'SourceSans3_600SemiBold',
-    fontSize: 12, letterSpacing: 2, color: Colors.gold,
+    fontSize: 12, letterSpacing: 1.5, color: Colors.gold,
+    marginRight: 8,
   },
   settingsIcon: { fontSize: 22, color: Colors.gold },
 
@@ -674,14 +756,27 @@ const styles = StyleSheet.create({
     fontFamily: 'Lora_600SemiBold',
     fontSize: 18, color: Colors.textSecondary, marginTop: 8, letterSpacing: 1,
   },
+  aiBadge: {
+    marginTop: 10,
+    paddingHorizontal: 12, paddingVertical: 5,
+    backgroundColor: 'rgba(244,196,48,0.14)',
+    borderRadius: Radius.full,
+    borderWidth: 1, borderColor: 'rgba(244,196,48,0.45)',
+  },
+  aiBadgeText: {
+    fontFamily: 'SourceSans3_600SemiBold',
+    fontSize: 11, letterSpacing: 1.5, color: Colors.gold,
+  },
 
   streakChip: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     marginTop: 10,
-    paddingHorizontal: 12, paddingVertical: 6,
+    paddingHorizontal: 14, paddingVertical: 8,
     borderRadius: Radius.full,
     backgroundColor: Colors.surface,
     borderWidth: 1, borderColor: Colors.border,
+    maxWidth: '100%',
+    flexShrink: 1,
   },
   streakChipMilestone: {
     borderColor: Colors.gold,
@@ -691,8 +786,106 @@ const styles = StyleSheet.create({
     fontFamily: 'Lora_700Bold', fontSize: 14, color: Colors.gold,
   },
   streakText: {
+    flexShrink: 1,
     fontFamily: 'SourceSans3_600SemiBold',
     fontSize: 13, color: Colors.textSecondary, letterSpacing: 0.5,
+  },
+
+  // Today's Blessing Pot — decorative jackpot-style card
+  potCard: {
+    backgroundColor: Colors.primary,
+    borderRadius: Radius.lg,
+    padding: Spacing.lg,
+    marginBottom: Spacing.md,
+    borderWidth: 1.5,
+    borderColor: Colors.gold,
+    overflow: 'hidden',
+    ...Shadow.elevated,
+  },
+  potAura: {
+    position: 'absolute',
+    top: -50, right: -50,
+    width: 180, height: 180, borderRadius: 90,
+    backgroundColor: 'rgba(244,196,48,0.20)',
+  },
+  potHeader: {
+    flexDirection: 'row', justifyContent: 'space-between',
+    alignItems: 'center', marginBottom: 8,
+  },
+  potEyebrow: {
+    fontFamily: 'SourceSans3_600SemiBold',
+    fontSize: 12, letterSpacing: 2, color: Colors.gold,
+    flexShrink: 1,
+  },
+  potGlyph: {
+    fontFamily: 'Lora_700Bold',
+    fontSize: 28, color: Colors.gold,
+  },
+  potAmount: {
+    fontFamily: 'SourceSans3_600SemiBold',
+    fontSize: 38, fontWeight: '900',
+    color: Colors.textPrimary, letterSpacing: -1,
+    marginBottom: 4,
+  },
+  potCaption: {
+    fontFamily: 'SourceSans3_400Regular',
+    fontSize: 13, color: 'rgba(255,248,231,0.80)',
+    marginBottom: 14,
+  },
+  potCountdownRow: {
+    flexDirection: 'row', gap: 8,
+    marginBottom: 10,
+  },
+  potTimeBox: {
+    flex: 1, paddingVertical: 10, paddingHorizontal: 6,
+    backgroundColor: 'rgba(0,0,0,0.30)',
+    borderRadius: Radius.sm,
+    alignItems: 'center',
+  },
+  potTimeValue: {
+    fontFamily: 'Lora_700Bold',
+    fontSize: 22, color: Colors.gold,
+    letterSpacing: -0.5,
+  },
+  potTimeLabel: {
+    fontFamily: 'SourceSans3_600SemiBold',
+    fontSize: 10, letterSpacing: 1.5,
+    color: 'rgba(255,255,255,0.65)',
+    marginTop: 2,
+  },
+  potDisclaimer: {
+    fontFamily: 'SourceSans3_400Regular',
+    fontSize: 11, fontStyle: 'italic',
+    color: 'rgba(255,248,231,0.65)',
+    textAlign: 'center',
+  },
+
+  // Today's Reflection strip — one plain line, large type
+  almanacStrip: {
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.md,
+    borderWidth: 1, borderColor: Colors.border,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    marginBottom: Spacing.md,
+  },
+  almanacStripEyebrow: {
+    fontFamily: 'SourceSans3_600SemiBold',
+    fontSize: 12, letterSpacing: 2, color: Colors.gold,
+    marginBottom: 6,
+  },
+  almanacStripBody: {
+    flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'space-between', gap: Spacing.sm,
+  },
+  almanacStripLine: {
+    flex: 1,
+    fontFamily: 'Lora_600SemiBold',
+    fontSize: 18, color: Colors.textPrimary, lineHeight: 24,
+  },
+  almanacStripCta: {
+    fontFamily: 'SourceSans3_600SemiBold',
+    fontSize: 14, color: Colors.gold,
   },
 
   signalRow: {
@@ -749,6 +942,7 @@ const styles = StyleSheet.create({
 
   drawBadge: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    flexWrap: 'wrap', gap: 6,
     backgroundColor: Colors.surface, borderRadius: Radius.sm,
     borderWidth: 1, borderColor: Colors.border,
     paddingHorizontal: 14, paddingVertical: 12, marginBottom: Spacing.lg,
@@ -756,11 +950,12 @@ const styles = StyleSheet.create({
   drawBadgePremium: { borderColor: Colors.gold },
   drawBadgeText: {
     fontFamily: 'SourceSans3_600SemiBold',
-    fontSize: 16, color: Colors.textSecondary, flex: 1,
+    fontSize: 16, color: Colors.textSecondary, flexShrink: 1,
   },
   upgradeLink: {
     fontFamily: 'SourceSans3_600SemiBold',
     fontSize: 16, color: Colors.gold,
+    flexShrink: 0,
   },
 
   // Today's locked reading hero — 2x3 grid
@@ -894,7 +1089,7 @@ const styles = StyleSheet.create({
   extrasGlyph: { fontFamily: 'Lora_700Bold', fontSize: 30, color: Colors.gold },
   extrasRow: {
     flexDirection: 'row', justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'center', gap: 8,
     paddingVertical: Spacing.sm + 2,
     borderTopWidth: 1, borderTopColor: Colors.borderLight,
   },
@@ -903,11 +1098,12 @@ const styles = StyleSheet.create({
   },
   extrasRowLabel: {
     fontFamily: 'SourceSans3_600SemiBold', fontSize: 12, letterSpacing: 1.5,
-    color: Colors.textMuted, flex: 1,
+    color: Colors.textMuted, flexShrink: 1,
   },
   extrasRowValue: {
     fontFamily: 'Lora_700Bold', fontSize: 18, fontWeight: '900',
-    color: Colors.textPrimary, letterSpacing: -0.2, flex: 1,
+    color: Colors.textPrimary, letterSpacing: -0.2,
+    flexShrink: 1, flexGrow: 0,
     textAlign: 'right',
   },
   premiumBlock: {
@@ -956,26 +1152,31 @@ const styles = StyleSheet.create({
   intentionGrid: {
     flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: Spacing.xl,
   },
+  // 3 cells per row — 30% width each, gap 8 fits within the 100% scrollContent.
+  // Wider cells let the 14pt floor labels render on a single line and keep
+  // the grid readable at all three text-size scales.
   intentionCell: {
-    width: '21%', aspectRatio: 1,
+    width: '30%', aspectRatio: 1.05,
     backgroundColor: Colors.surface, borderRadius: Radius.md,
     borderWidth: 1, borderColor: Colors.border,
-    alignItems: 'center', justifyContent: 'center', gap: 4,
+    alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingHorizontal: 6,
   },
   intentionCellActive: { borderColor: Colors.gold, backgroundColor: Colors.surfaceAlt },
-  intentionGlyph: { fontFamily: 'Lora_700Bold', fontSize: 24, color: Colors.textMuted },
+  intentionGlyph: { fontFamily: 'Lora_700Bold', fontSize: 28, color: Colors.textMuted },
   intentionGlyphActive: { color: Colors.gold },
   intentionLabel: {
-    fontFamily: 'SourceSans3_600SemiBold', fontSize: 10,
+    fontFamily: 'SourceSans3_600SemiBold', fontSize: 12,
     letterSpacing: 0.3, color: Colors.textMuted, textAlign: 'center',
   },
   intentionLabelActive: { color: Colors.textSecondary },
 
   countRow: {
     flexDirection: 'row', gap: 10, marginBottom: Spacing.xl, justifyContent: 'center',
+    flexWrap: 'wrap',
   },
   countBtn: {
-    width: 52, height: 52, borderRadius: 26,
+    width: 60, height: 60, borderRadius: 30,
     backgroundColor: Colors.surface,
     borderWidth: 1.5, borderColor: Colors.border,
     alignItems: 'center', justifyContent: 'center',

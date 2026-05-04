@@ -1,19 +1,24 @@
 // Safety tests — gambling-content guard + age gate.
 // Run with: npm run test:safety
 //
-// These are smoke tests for the most important rules:
-//   1. Gambling/lottery/Toto/Singapore Pools terms are blocked.
-//   2. The post-AI sanitiser rewrites prediction-style phrasing.
-//   3. The 18+ age gate accepts adults and rejects minors.
+// Two modes:
+//   1. STRICT (PROTOTYPE_MODE === false) — pre-App-Store-submission posture.
+//      All gambling/lottery/Toto/Singapore Pools/lucky terms must be blocked.
+//      The post-AI sanitiser must rewrite prediction-style phrasing.
+//   2. PROTOTYPE (PROTOTYPE_MODE === true) — current dev posture per the
+//      explicit override in CLAUDE.md. Most strict rules are suspended; we
+//      only assert the floor: no operator impersonation, no certainty claims.
+//
+// The 18+ age gate rules are independent of mode and always run.
 //
 // Why these and only these: every other rule in the app is enforced by the
-// system prompt or by code review; these three are the things that, if they
+// system prompt or by code review; these are the things that, if they
 // regress, take the App Store listing down. Keep this file dependency-free.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { checkContent, sanitiseEntertainment } from '../filter';
+import { checkContent, sanitiseEntertainment, PROTOTYPE_MODE } from '../filter';
 
 // Inline copy of the production age-gate logic. Kept here (not imported from
 // the screen) because the screen file pulls in React Native and won't load
@@ -27,7 +32,18 @@ function isAdult(day: number, month: number, year: number, today = new Date()): 
   return age >= 18;
 }
 
-test('checkContent blocks gambling operator names', () => {
+// Run a test only when the strict block list is engaged. Under prototype
+// mode we still emit the test name (so the runner reports it) but skip
+// the body, exactly mirroring how the runtime is configured.
+const strictTest = (name: string, fn: () => void) =>
+  test(name, { skip: PROTOTYPE_MODE ? 'PROTOTYPE_MODE' : false }, fn);
+
+const prototypeTest = (name: string, fn: () => void) =>
+  test(name, { skip: PROTOTYPE_MODE ? false : 'STRICT_MODE' }, fn);
+
+// ─── STRICT MODE ────────────────────────────────────────────────────
+
+strictTest('checkContent blocks gambling operator names', () => {
   for (const phrase of [
     'Try Singapore Pools today',
     'Buy a TOTO ticket',
@@ -41,7 +57,7 @@ test('checkContent blocks gambling operator names', () => {
   }
 });
 
-test('checkContent blocks gambling activity verbs', () => {
+strictTest('checkContent blocks gambling activity verbs', () => {
   for (const phrase of [
     'Place a bet on this number',
     'I love gambling at the casino',
@@ -54,7 +70,7 @@ test('checkContent blocks gambling activity verbs', () => {
   }
 });
 
-test('checkContent blocks prediction phrasing', () => {
+strictTest('checkContent blocks prediction phrasing', () => {
   for (const phrase of [
     'Here are your winning numbers',
     'Sure win combination',
@@ -66,6 +82,68 @@ test('checkContent blocks prediction phrasing', () => {
     assert.equal(r.safe, false, `should block: "${phrase}"`);
   }
 });
+
+strictTest('sanitiseEntertainment rewrites gambling-prediction phrasing', () => {
+  const out = sanitiseEntertainment(
+    'A guaranteed sure-win result that will predict your future.'
+  );
+  assert.ok(!/guaranteed/i.test(out), 'should not contain "guaranteed"');
+  assert.ok(!/sure[-\s]?win/i.test(out), 'should not contain "sure win"');
+  assert.ok(!/predict/i.test(out), 'should not contain "predict"');
+});
+
+strictTest('sanitiseEntertainment falls back to "blessed" if "lucky" survived', () => {
+  const out = sanitiseEntertainment('A lucky reflection for you.');
+  assert.ok(/blessed/i.test(out));
+  assert.ok(!/lucky/i.test(out));
+});
+
+// ─── PROTOTYPE MODE ─────────────────────────────────────────────────
+// Floor rules — even under the relaxed prototype block list these MUST hold.
+
+prototypeTest('checkContent still blocks operator impersonation', () => {
+  for (const phrase of [
+    'Sourced from Singapore Pools',
+    'Powered by SG Pools',
+    'A Tote Board exclusive',
+  ]) {
+    const r = checkContent(phrase);
+    assert.equal(r.safe, false, `should block: "${phrase}"`);
+  }
+});
+
+prototypeTest('checkContent still blocks certainty claims', () => {
+  for (const phrase of [
+    'Guaranteed win today',
+    'Sure win combination',
+    'You will definitely win',
+    'You will win the jackpot',
+  ]) {
+    const r = checkContent(phrase);
+    assert.equal(r.safe, false, `should block: "${phrase}"`);
+  }
+});
+
+prototypeTest('checkContent allows TOTO/4D/lucky cultural framing', () => {
+  // These are the strings that were rejected in strict mode but are
+  // explicitly allowed in prototype mode.
+  for (const phrase of [
+    'Your TOTO numbers for today',
+    '4D combinations to consider',
+    'Lucky number 8 brings prosperity',
+  ]) {
+    const r = checkContent(phrase);
+    assert.equal(r.safe, true, `should allow in prototype: "${phrase}"`);
+  }
+});
+
+prototypeTest('sanitiseEntertainment softens certainty even in prototype', () => {
+  const out = sanitiseEntertainment('You will definitely win and a guaranteed jackpot awaits.');
+  assert.ok(!/will definitely win/i.test(out), 'should soften "will definitely win"');
+  assert.ok(!/guaranteed jackpot/i.test(out), 'should soften "guaranteed jackpot"');
+});
+
+// ─── ALWAYS-ON ──────────────────────────────────────────────────────
 
 test('checkContent allows neutral cultural reflection', () => {
   for (const phrase of [
@@ -82,23 +160,6 @@ test('checkContent rejects empty input', () => {
   const r = checkContent('   ');
   assert.equal(r.safe, false);
   if (!r.safe) assert.equal(r.reason, 'empty');
-});
-
-test('sanitiseEntertainment rewrites gambling-prediction phrasing', () => {
-  const out = sanitiseEntertainment(
-    'A guaranteed sure-win result that will predict your future.'
-  );
-  assert.ok(!/guaranteed/i.test(out), 'should not contain "guaranteed"');
-  assert.ok(!/sure[-\s]?win/i.test(out), 'should not contain "sure win"');
-  assert.ok(!/predict/i.test(out), 'should not contain "predict"');
-});
-
-test('sanitiseEntertainment falls back to "blessed" if "lucky" survived', () => {
-  // Standalone "lucky" wouldn't reach this function (block-list only catches
-  // "lucky number"/"lucky digit" combos), so the fallback covers casing slips.
-  const out = sanitiseEntertainment('A lucky reflection for you.');
-  assert.ok(/blessed/i.test(out));
-  assert.ok(!/lucky/i.test(out));
 });
 
 test('age gate accepts an 18-year-old on their birthday', () => {

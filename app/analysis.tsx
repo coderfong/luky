@@ -19,7 +19,10 @@ import {
   getTodayAnalysisCache, saveTodayAnalysisCache,
 } from '../lib/storage';
 
-const GROK_API_KEY = process.env.EXPO_PUBLIC_GROK_API_KEY ?? '';
+const GROK_API_KEY =
+  process.env.EXPO_PUBLIC_GROQ_API_KEY ??
+  process.env.EXPO_PUBLIC_GROK_API_KEY ??
+  '';
 
 const DIRECTIONS = ['East · 東', 'South · 南', 'North · 北', 'West · 西', 'Southeast · 東南'];
 const ELEMENTS = ['Wood · 木', 'Fire · 火', 'Earth · 土', 'Metal · 金', 'Water · 水'];

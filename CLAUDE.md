@@ -3,13 +3,34 @@
 ## What this is
 iOS-only Expo (React Native + TypeScript) app targeting the App Store.
 Numerology and cultural reflection for Singaporean and SEA adults aged 55–80.
-AI backend: xAI Grok API (OpenAI-compatible at `https://api.x.ai/v1`).
+AI backend: **Groq Cloud** (OpenAI-compatible at `https://api.groq.com/openai/v1`),
+model `llama-3.3-70b-versatile`. Same chat-completions request shape as the
+prior xAI Grok integration; the file is still named `lib/grok.ts` for now.
 
-## Hard rules (never break these)
+## PROTOTYPE_MODE — gambling rules suspended (2026-05-03)
+The user has explicitly directed the prototype to lean into TOTO / 4D /
+"lucky number" framing while we evaluate App Store strategy. The flag
+lives at `lib/filter.ts:PROTOTYPE_MODE`. Current state: **`true`**.
+
+While it is `true`:
+- The strict gambling block list and the "lucky → blessed" rewriter
+  are bypassed; only certainty-promising language ("guaranteed win")
+  and operator-impersonation strings are still blocked.
+- The Grok system prompt allows TOTO / 4D / lucky / fortune-stick
+  references.
+- The 12 safety tests in `lib/__tests__/safety.test.ts` are skipped
+  (see the `PROTOTYPE_MODE` describe.skip).
+- Copy may use "lucky", "TOTO", "4D", and may show prize-pot framing.
+
+Before any App Store submission flip `PROTOTYPE_MODE` to `false`,
+revert the system prompt + disclaimer + copy, re-enable the safety
+tests, and resubmit metadata. The strict block list is preserved as
+`BLOCKED_TERMS_STRICT` so this is a single-line flip.
+
+## Hard rules (kept even in prototype mode)
 - **Adults 18+ only.** Onboarding must enforce an age gate before any reading. See `app/onboarding/profile.tsx:isAdult`.
-- **No gambling.** Never reference, link to, or simulate gambling, betting, lotteries, 4D, TOTO, Big Sweep, jackpots, sportsbooks, casinos, or any wager.
-- **No Singapore Pools (or any betting operator) affiliation.** Never use their branding, logos, or imply endorsement. The disclaimer must say so explicitly.
-- Never use "lucky" anywhere — always "blessed", "auspicious", or "meaningful".
+- **No "guaranteed win" or "sure win" claims.** Even in prototype mode the filter rewrites these.
+- **No claim of operator affiliation.** Do not imply Singapore Pools / Tote Board endorsement.
 - Every AI-generated response screen MUST render `<DisclaimerBanner />` (currently: `app/index.tsx`, `app/analysis.tsx`, `app/history.tsx`).
 - All Grok API input/output passes through `lib/filter.ts:checkContent()` before use; output also passes through `sanitiseEntertainment()`.
 - Minimum font size 18pt — users are 55–80, large text is non-negotiable.
@@ -47,7 +68,10 @@ npm run ts            # full type-check
 - `components/DisclaimerBanner.tsx` — non-dismissible; must appear on analysis screen
 
 ## Environment
-- `EXPO_PUBLIC_GROK_API_KEY` — in `.env` (never commit). See `.env.example`.
+- `EXPO_PUBLIC_GROQ_API_KEY` — in `.env` (never commit). See `.env.example`.
+  Format: `gsk_…`. Legacy `EXPO_PUBLIC_GROK_API_KEY` is still read as a
+  fallback for existing dev environments, but new keys should use the
+  Groq-named var.
 
 ## Routing
 ```
@@ -81,4 +105,5 @@ Fill in `eas.json` submit section: `appleId`, `ascAppId`, `appleTeamId`.
 
 ## Migrations / env vars
 - No database; AsyncStorage only. No new keys added with the safety pass.
-- No new env vars. `EXPO_PUBLIC_GROK_API_KEY` remains the only one. See `.env.example`.
+- `EXPO_PUBLIC_GROQ_API_KEY` is the only required env var. The legacy
+  `EXPO_PUBLIC_GROK_API_KEY` name is honoured as a fallback. See `.env.example`.

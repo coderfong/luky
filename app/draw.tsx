@@ -313,7 +313,7 @@ export default function DrawScreen() {
         ]).start();
 
         fireSparkles(idx);
-        showCallout(`★ BLESSED #${idx + 1} · ${numbers[idx]} ★`);
+        showCallout(`Number ${numbers[idx]}`);
         setRevealedCount(c => c + 1);
 
         Animated.timing(ballScale, {
@@ -378,9 +378,9 @@ export default function DrawScreen() {
         {/* Header */}
         <View style={styles.header}>
           <AppText style={styles.eyebrow}>
-            {allRevealed ? '★ ALL REVEALED · OPEN YOUR READING ★' : '◉ DRAWING IN PROGRESS'}
+            {allRevealed ? 'Your numbers are ready' : 'Drawing your numbers'}
           </AppText>
-          <AppText variant="heading" style={styles.title}>Blessed Reveal</AppText>
+          <AppText variant="heading" style={styles.title}>Your Blessed Numbers</AppText>
           <AppText style={styles.subtitle}>福 星 顯 現</AppText>
         </View>
 
@@ -614,7 +614,7 @@ export default function DrawScreen() {
         <View style={styles.footer}>
           {!allRevealed ? (
             <AppText style={styles.progress}>
-              {revealedCount} / {numbers.length} REVEALED
+              {revealedCount} of {numbers.length} so far
             </AppText>
           ) : (
             <Animated.View
@@ -623,7 +623,7 @@ export default function DrawScreen() {
                 transform: [{ scale: finaleAnim.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] }) }],
               }}
             >
-              <AppText style={styles.finaleText}>★ ALL BLESSED ★</AppText>
+              <AppText style={styles.finaleText}>All ready ★</AppText>
             </Animated.View>
           )}
 
@@ -638,7 +638,7 @@ export default function DrawScreen() {
             accessibilityRole="button"
           >
             <AppText style={[styles.ctaLabel, !allRevealed && styles.ctaLabelWaiting]}>
-              {allRevealed ? 'READ MY BLESSING →' : 'PLEASE WAIT…'}
+              {allRevealed ? 'Read My Reading →' : 'Please wait…'}
             </AppText>
           </TouchableOpacity>
           <AppText style={styles.disclaimer}>
@@ -845,9 +845,9 @@ const styles = StyleSheet.create({
   },
   calloutText: {
     fontFamily: 'SourceSans3_600SemiBold',
-    fontSize: 13,
+    fontSize: 18,
     fontWeight: '900',
-    letterSpacing: 1.5,
+    letterSpacing: 0.5,
     color: Colors.gold,
   },
 

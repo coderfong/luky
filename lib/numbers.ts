@@ -334,3 +334,574 @@ export function getAffirmation(nums: number[]): string {
   const idx = nums.reduce((a, n) => a + n, 0) % AFFIRMATIONS.length;
   return AFFIRMATIONS[idx];
 }
+
+// ── Today's Almanac ─────────────────────────────────────────────────
+// A daily cultural-reflection snapshot derived deterministically from the
+// SGT date. Used by the Almanac screen and the home-screen almanac strip.
+//
+// Design intent: lift the visual structure from the prototype's
+// "Today's Almanac" without any gambling framing — overall day energy,
+// good/mindful activities, life-area reflections, good hours, lunar
+// state. Anything tied to subjective claims (a specific direction,
+// pantang etc.) reuses `getDailyExtras()` so both surfaces stay in sync.
+
+export type AlmanacEnergy = 'bright' | 'steady' | 'gentle';
+export type AlmanacDayType = 'open' | 'stable' | 'closed';
+export type AlmanacTone = 'bright' | 'good' | 'steady' | 'gentle';
+export type AlmanacLunar = 'waxing' | 'full' | 'waning' | 'new';
+
+export interface AlmanacHour {
+  rangeLabel: string; // e.g. "09:00 – 11:00"
+  cn: string;         // e.g. "巳時"
+  good: boolean;      // true = best/steady, false = mindful
+  toneKey: 'best' | 'steady' | 'mindful';
+}
+
+export interface AlmanacLifeArea {
+  id: 'wealth' | 'love' | 'health' | 'career';
+  cn: string;
+  value: number;          // 0–100, deterministic
+  toneKey: AlmanacTone;
+}
+
+export interface DailyAlmanac {
+  // Hero
+  energy: AlmanacEnergy;
+  energyScore: number;            // 0–100
+  dayType: AlmanacDayType;
+  // Fortune line — short Chinese phrase + the existing affirmation pool
+  fortuneCn: string;
+  fortuneEn: string;
+  // Life-area meters — 4 deterministic values
+  lifeAreas: AlmanacLifeArea[];
+  // 3 good hours bands (1–2 best, 1 mindful)
+  hours: AlmanacHour[];
+  // Lunar
+  lunar: AlmanacLunar;
+  // Number of the day — single hero number with a one-line cultural reason
+  heroNumber: number;
+  heroNumberNote: string;
+  // Colour of the day — name + hex; rotates over a 7-day cycle
+  colour: { name: string; hex: string };
+  // Element of the day (五行) — rotates daily
+  element: { id: 'wood' | 'fire' | 'earth' | 'metal' | 'water'; cn: string; en: string };
+  // Zodiac compatibility — one harmonious + one to be careful with
+  harmonyZodiac: { animal: string; cn: string };
+  carefulZodiac: { animal: string; cn: string };
+}
+
+const FORTUNE_LINES_CN = [
+  '順 順 來，不 要 急',
+  '心 安 即 是 福',
+  '柳 暗 花 明 又 一 村',
+  '靜 水 流 深',
+  '一 步 一 蓮 花',
+  '日 出 而 作',
+  '福 至 心 靈',
+];
+const FORTUNE_LINES_EN = [
+  '"Let things flow — don\'t rush."',
+  '"A calm heart is itself a blessing."',
+  '"Beyond the willows, another village blooms."',
+  '"Still water runs deep."',
+  '"Each step opens a flower."',
+  '"Begin with the sunrise."',
+  '"Blessing arrives when the heart is ready."',
+];
+
+// Colour rotation — culturally resonant SE Asian palette. Hex is meant for
+// a small swatch chip, not as a guarantee of taste; users who care can
+// always treat the suggestion as decorative.
+const COLOURS = [
+  { name: 'Imperial Gold',  hex: '#C9A24A' },
+  { name: 'Cinnabar Red',   hex: '#C8362C' },
+  { name: 'Jade Green',     hex: '#4A8C5C' },
+  { name: 'Ivory',          hex: '#F5EEE1' },
+  { name: 'Mulberry',       hex: '#6B2737' },
+  { name: 'Ink Black',      hex: '#1B1410' },
+  { name: 'Sky Blue',       hex: '#6FA3B5' },
+];
+
+// Five elements (五行) on a stable 5-day rotation.
+const ELEMENTS: DailyAlmanac['element'][] = [
+  { id: 'wood',  cn: '木', en: 'Wood'  },
+  { id: 'fire',  cn: '火', en: 'Fire'  },
+  { id: 'earth', cn: '土', en: 'Earth' },
+  { id: 'metal', cn: '金', en: 'Metal' },
+  { id: 'water', cn: '水', en: 'Water' },
+];
+
+const ZODIAC_LIST: { animal: string; cn: string }[] = [
+  { animal: 'Rat',     cn: '鼠' },
+  { animal: 'Ox',      cn: '牛' },
+  { animal: 'Tiger',   cn: '虎' },
+  { animal: 'Rabbit',  cn: '兔' },
+  { animal: 'Dragon',  cn: '龍' },
+  { animal: 'Snake',   cn: '蛇' },
+  { animal: 'Horse',   cn: '馬' },
+  { animal: 'Goat',    cn: '羊' },
+  { animal: 'Monkey',  cn: '猴' },
+  { animal: 'Rooster', cn: '雞' },
+  { animal: 'Dog',     cn: '狗' },
+  { animal: 'Pig',     cn: '豬' },
+];
+
+const HOUR_BANDS: { rangeLabel: string; cn: string }[] = [
+  { rangeLabel: '07:00 – 09:00', cn: '辰時' },
+  { rangeLabel: '09:00 – 11:00', cn: '巳時' },
+  { rangeLabel: '11:00 – 13:00', cn: '午時' },
+  { rangeLabel: '13:00 – 15:00', cn: '未時' },
+  { rangeLabel: '15:00 – 17:00', cn: '申時' },
+  { rangeLabel: '17:00 – 19:00', cn: '酉時' },
+];
+
+function sgtDateSeed(): number {
+  const sgt = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  return parseInt(sgt.toISOString().split('T')[0].replace(/-/g, ''), 10);
+}
+
+function valueToTone(v: number): AlmanacTone {
+  if (v >= 80) return 'bright';
+  if (v >= 65) return 'good';
+  if (v >= 50) return 'steady';
+  return 'gentle';
+}
+
+/**
+ * Compute today's almanac. Pure and deterministic per SGT date.
+ */
+export function getDailyAlmanac(): DailyAlmanac {
+  const seed = sgtDateSeed();
+
+  // Energy — score 50–95 in one of three buckets so the day never feels
+  // "bad". Cultural reflection should never tell users they have a bad day.
+  const eRaw = (seed * 9301 + 49297) % 45;
+  const energyScore = 50 + eRaw;
+  const energy: AlmanacEnergy =
+    energyScore >= 80 ? 'bright' : energyScore >= 65 ? 'steady' : 'gentle';
+  const dayType: AlmanacDayType =
+    energy === 'bright' ? 'open' : energy === 'steady' ? 'stable' : 'closed';
+
+  const f = (seed * 1597 + 7919) % FORTUNE_LINES_CN.length;
+  const fortuneCn = FORTUNE_LINES_CN[f];
+  const fortuneEn = FORTUNE_LINES_EN[f];
+
+  // Life areas — 4 deterministic values, biased toward 50–90
+  const areas: AlmanacLifeArea[] = [
+    { id: 'wealth', cn: '財', value: 0, toneKey: 'steady' },
+    { id: 'love',   cn: '愛', value: 0, toneKey: 'steady' },
+    { id: 'health', cn: '安', value: 0, toneKey: 'steady' },
+    { id: 'career', cn: '職', value: 0, toneKey: 'steady' },
+  ];
+  let s = (seed * 1664525 + 1013904223) >>> 0;
+  for (const a of areas) {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    a.value = 50 + (s % 45);
+    a.toneKey = valueToTone(a.value);
+  }
+
+  // Hours — pick 2 "good" bands and 1 "mindful" band, no overlap
+  const idxs: number[] = [];
+  let h = (seed * 2654435761) >>> 0;
+  while (idxs.length < 3) {
+    h = (h * 1664525 + 1013904223) >>> 0;
+    const i = h % HOUR_BANDS.length;
+    if (!idxs.includes(i)) idxs.push(i);
+  }
+  idxs.sort((a, b) => a - b);
+  const hours: AlmanacHour[] = idxs.map((i, k) => {
+    const isMindful = k === 2;
+    return {
+      rangeLabel: HOUR_BANDS[i].rangeLabel,
+      cn: HOUR_BANDS[i].cn,
+      good: !isMindful,
+      toneKey: k === 0 ? 'best' : k === 1 ? 'steady' : 'mindful',
+    };
+  });
+
+  // Lunar — 4-bucket cycle keyed off the day-of-month (rough but stable)
+  const sgt = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  const dom = sgt.getUTCDate();
+  const lunar: AlmanacLunar =
+    dom <= 7  ? 'new' :
+    dom <= 14 ? 'waxing' :
+    dom <= 21 ? 'full' : 'waning';
+
+  // Hero number for the day — pull from the curated DAILY_AUSPICIOUS_POOL so
+  // the number always reads as culturally meaningful, not random.
+  const heroIdx = ((seed * 8191) >>> 0) % DAILY_AUSPICIOUS_POOL.length;
+  const heroNumber = DAILY_AUSPICIOUS_POOL[heroIdx];
+  const heroNumberNote =
+    CULTURAL_NUMBER_NOTES[heroNumber] ?? getNumberMeaning(heroNumber);
+
+  const colour = COLOURS[((seed * 6151) >>> 0) % COLOURS.length];
+  const element = ELEMENTS[((seed * 4099) >>> 0) % ELEMENTS.length];
+
+  // Zodiac compat — pick two distinct animals deterministically. The two are
+  // intended to complement, not contradict, the user's own zodiac (which is
+  // surfaced separately on the analysis screen).
+  const harmonyIdx = ((seed * 2089) >>> 0) % ZODIAC_LIST.length;
+  let carefulIdx = ((seed * 5237 + 7) >>> 0) % ZODIAC_LIST.length;
+  if (carefulIdx === harmonyIdx) carefulIdx = (carefulIdx + 6) % ZODIAC_LIST.length;
+  const harmonyZodiac = ZODIAC_LIST[harmonyIdx];
+  const carefulZodiac = ZODIAC_LIST[carefulIdx];
+
+  return {
+    energy, energyScore, dayType,
+    fortuneCn, fortuneEn,
+    lifeAreas: areas,
+    hours,
+    lunar,
+    heroNumber, heroNumberNote,
+    colour, element,
+    harmonyZodiac, carefulZodiac,
+  };
+}
+
+// ─── 5 daily auspicious systems ──────────────────────────────────
+// These are deterministic per SGT date so two users on the same day see
+// the same picks (important for cultural credibility) but may also be
+// re-personalised by the AI rewrite layer when a Groq key is available.
+
+// 1. Kau Cim — Daily Fortune Stick. 100 sticks, mapped to a fortune line +
+//    a luck rating. The fortune lines are short, kind, culturally rooted.
+const KAU_CIM_FORTUNES: { tier: 'great' | 'good' | 'middle' | 'gentle'; en: string; cn: string }[] = [
+  { tier: 'great',  en: 'A door long closed begins to open.', cn: '柳暗花明' },
+  { tier: 'great',  en: 'Patience brings the reward you seek.', cn: '苦盡甘來' },
+  { tier: 'great',  en: 'The harvest is sweet — gather quietly.', cn: '五穀豐登' },
+  { tier: 'good',   en: 'A small step today leads to a steady gain.', cn: '步步高升' },
+  { tier: 'good',   en: 'Help arrives from a familiar face.', cn: '貴人扶助' },
+  { tier: 'good',   en: 'Tend what you have; abundance follows.', cn: '富貴有道' },
+  { tier: 'middle', en: 'Hold your peace — clarity is on the way.', cn: '心靜自安' },
+  { tier: 'middle', en: 'Listen more than you speak today.', cn: '言多必失' },
+  { tier: 'middle', en: 'A neutral day — make no large decisions.', cn: '平常如意' },
+  { tier: 'gentle', en: 'Walk softly past arguments today.', cn: '退一步海闊' },
+  { tier: 'gentle', en: 'Rest is also a kind of work.', cn: '靜以修身' },
+  { tier: 'gentle', en: 'Save your effort for tomorrow.', cn: '養精蓄銳' },
+];
+
+const TIER_RATING: Record<string, number> = {
+  great: 9.0, good: 7.5, middle: 6.5, gentle: 5.5,
+};
+
+export interface KauCim {
+  stickNumber: number;     // 1–100
+  tier: 'great' | 'good' | 'middle' | 'gentle';
+  fortuneEn: string;
+  fortuneCn: string;
+  rating: number;          // 0–10, derived from tier with a small jitter
+}
+
+export function getKauCim(): KauCim {
+  const seed = sgtDateSeed();
+  const stickNumber = (((seed * 6271) >>> 0) % 100) + 1;
+  const f = KAU_CIM_FORTUNES[((seed * 8273) >>> 0) % KAU_CIM_FORTUNES.length];
+  const jitter = (((seed * 4567) >>> 0) % 5) / 10; // 0.0 – 0.4
+  const rating = Math.min(9.9, Math.max(4.5, TIER_RATING[f.tier] + jitter));
+  return {
+    stickNumber, tier: f.tier,
+    fortuneEn: f.en, fortuneCn: f.cn,
+    rating: Math.round(rating * 10) / 10,
+  };
+}
+
+// 2. Chinese Zodiac — Daily Animal Luck.
+//    Computes a compatibility score for the user's birth-year animal
+//    against the day animal, plus 3 colours and 3 numbers.
+const ZODIAC_BASE_YEAR = 1900; // 1900 = Rat (Year of the Metal Rat)
+const ZODIAC_ORDER: ZodiacAnimal[] = [
+  'Rat', 'Ox', 'Tiger', 'Rabbit', 'Dragon', 'Snake',
+  'Horse', 'Goat', 'Monkey', 'Rooster', 'Dog', 'Pig',
+];
+type ZodiacAnimal =
+  | 'Rat' | 'Ox' | 'Tiger' | 'Rabbit' | 'Dragon' | 'Snake'
+  | 'Horse' | 'Goat' | 'Monkey' | 'Rooster' | 'Dog' | 'Pig';
+
+export function zodiacFromYear(year: number): ZodiacAnimal {
+  const idx = ((year - ZODIAC_BASE_YEAR) % 12 + 12) % 12;
+  return ZODIAC_ORDER[idx];
+}
+
+// Compatibility table — rough cultural sketch; trine groups ≈ harmonious,
+// opposite (6 apart) ≈ clashing. Not a definitive BaZi compat.
+const TRINE_GROUPS: ZodiacAnimal[][] = [
+  ['Rat', 'Dragon', 'Monkey'],
+  ['Ox', 'Snake', 'Rooster'],
+  ['Tiger', 'Horse', 'Dog'],
+  ['Rabbit', 'Goat', 'Pig'],
+];
+
+export interface ZodiacToday {
+  userAnimal: ZodiacAnimal;
+  dayAnimal: ZodiacAnimal;
+  score: number;       // 0–10
+  rapport: 'harmonious' | 'neutral' | 'clashing';
+  colours: string[];   // 3 colour names
+  numbers: number[];   // 3 numbers 1–49
+}
+
+export function getZodiacToday(birthYear?: number): ZodiacToday {
+  const seed = sgtDateSeed();
+  const dayAnimal = ZODIAC_ORDER[((seed * 6997) >>> 0) % 12];
+  const userAnimal: ZodiacAnimal = birthYear
+    ? zodiacFromYear(birthYear)
+    : ZODIAC_ORDER[((seed * 1117) >>> 0) % 12];
+
+  // Score: same trine = harmonious (8.5), opposite (6 apart) = clashing (4.5),
+  // else neutral (6.5)
+  const sameTrine = TRINE_GROUPS.some(g =>
+    g.includes(userAnimal) && g.includes(dayAnimal)
+  );
+  const userIdx = ZODIAC_ORDER.indexOf(userAnimal);
+  const dayIdx = ZODIAC_ORDER.indexOf(dayAnimal);
+  const distance = Math.min(
+    (userIdx - dayIdx + 12) % 12,
+    (dayIdx - userIdx + 12) % 12,
+  );
+  const isOpposite = distance === 6;
+  const rapport: ZodiacToday['rapport'] = sameTrine ? 'harmonious' : isOpposite ? 'clashing' : 'neutral';
+  const baseScore = sameTrine ? 8.5 : isOpposite ? 4.5 : 6.5;
+  const jitter = (((seed * 9907) >>> 0) % 8) / 10;
+  const score = Math.round((baseScore + jitter) * 10) / 10;
+
+  // Colours — 3 from the 7-colour palette
+  const colourPool = [
+    'Imperial Gold', 'Cinnabar Red', 'Jade Green', 'Ivory',
+    'Mulberry', 'Ink Black', 'Sky Blue',
+  ];
+  const colours: string[] = [];
+  let s = seed;
+  while (colours.length < 3) {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    const c = colourPool[s % colourPool.length];
+    if (!colours.includes(c)) colours.push(c);
+  }
+
+  // Numbers — 3 from the auspicious pool
+  const numbers: number[] = [];
+  let s2 = (seed * 7919) >>> 0;
+  while (numbers.length < 3) {
+    s2 = (s2 * 1664525 + 1013904223) >>> 0;
+    const n = DAILY_AUSPICIOUS_POOL[s2 % DAILY_AUSPICIOUS_POOL.length];
+    if (!numbers.includes(n)) numbers.push(n);
+  }
+
+  return { userAnimal, dayAnimal, score, rapport, colours, numbers };
+}
+
+// 6. BaZi Lite — Element Balance. Simplified to user-element vs day-element
+//    relation (generative cycle, supportive cycle, controlling cycle).
+const ELEMENT_ORDER: DailyAlmanac['element']['id'][] = ['wood', 'fire', 'earth', 'metal', 'water'];
+type ElementId = DailyAlmanac['element']['id'];
+
+// Generative cycle (生): wood → fire → earth → metal → water → wood
+function elementGenerates(a: ElementId, b: ElementId): boolean {
+  const i = ELEMENT_ORDER.indexOf(a);
+  return ELEMENT_ORDER[(i + 1) % 5] === b;
+}
+// Controlling cycle (剋): wood → earth → water → fire → metal → wood
+function elementControls(a: ElementId, b: ElementId): boolean {
+  const i = ELEMENT_ORDER.indexOf(a);
+  return ELEMENT_ORDER[(i + 2) % 5] === b;
+}
+
+export interface BaZiLite {
+  userElement: ElementId;
+  userElementCn: string;
+  dayElement: ElementId;
+  dayElementCn: string;
+  relation: 'supports' | 'is supported' | 'restrains' | 'is restrained' | 'aligned';
+  outlook: 'growth' | 'support' | 'caution' | 'steady';
+  message: string;
+}
+
+const ELEMENT_CN: Record<ElementId, string> = {
+  wood: '木', fire: '火', earth: '土', metal: '金', water: '水',
+};
+
+export function getBaZiLite(birthYear?: number): BaZiLite {
+  const seed = sgtDateSeed();
+  // User element — reduce birth year to one of 5; if absent, derive from seed.
+  const userElement: ElementId = birthYear
+    ? ELEMENT_ORDER[(((Math.floor(birthYear / 2)) % 5) + 5) % 5]
+    : ELEMENT_ORDER[((seed * 233) >>> 0) % 5];
+  const dayElement: ElementId = ELEMENT_ORDER[((seed * 4099) >>> 0) % 5];
+
+  let relation: BaZiLite['relation'];
+  let outlook: BaZiLite['outlook'];
+  let message: string;
+
+  if (userElement === dayElement) {
+    relation = 'aligned';
+    outlook = 'steady';
+    message = 'A steady, in-tune day. Trust your usual rhythm.';
+  } else if (elementGenerates(userElement, dayElement)) {
+    relation = 'supports';
+    outlook = 'support';
+    message = 'You give energy out today — kind acts return to you.';
+  } else if (elementGenerates(dayElement, userElement)) {
+    relation = 'is supported';
+    outlook = 'growth';
+    message = 'Today supports your growth. Begin small things.';
+  } else if (elementControls(userElement, dayElement)) {
+    relation = 'restrains';
+    outlook = 'steady';
+    message = 'You can shape today — keep your hand light.';
+  } else {
+    relation = 'is restrained';
+    outlook = 'caution';
+    message = 'Be cautious — slow down before big moves.';
+  }
+
+  return {
+    userElement, userElementCn: ELEMENT_CN[userElement],
+    dayElement, dayElementCn: ELEMENT_CN[dayElement],
+    relation, outlook, message,
+  };
+}
+
+// 7. I Ching — Hexagram of the Day. 64 hexagrams, each with a short
+//    meaning and one-line decision advice. Curated subset for prototyping.
+const HEXAGRAMS: {
+  num: number; name: string; cn: string; meaning: string; advice: string;
+}[] = [
+  { num: 1,  name: 'The Creative',     cn: '乾', meaning: 'Bold beginning.',          advice: 'Begin what you have planned.' },
+  { num: 2,  name: 'The Receptive',    cn: '坤', meaning: 'Yielding strength.',       advice: 'Receive help today.' },
+  { num: 11, name: 'Peace',            cn: '泰', meaning: 'Heaven and earth meet.',   advice: 'A good day to mend bridges.' },
+  { num: 14, name: 'Great Possession', cn: '大有', meaning: 'Abundance gathers.',     advice: 'Hold what you have well.' },
+  { num: 16, name: 'Enthusiasm',       cn: '豫', meaning: 'Joyful momentum.',         advice: 'Move now — but stay kind.' },
+  { num: 22, name: 'Grace',            cn: '賁', meaning: 'Beauty in form.',          advice: 'Care for your appearance.' },
+  { num: 24, name: 'Return',           cn: '復', meaning: 'A turning point.',         advice: 'Return to your old habit of care.' },
+  { num: 32, name: 'Duration',         cn: '恆', meaning: 'Lasting steadiness.',      advice: 'Keep at the small thing.' },
+  { num: 42, name: 'Increase',         cn: '益', meaning: 'Gain through giving.',     advice: 'Give a little — gain a lot.' },
+  { num: 50, name: 'The Cauldron',     cn: '鼎', meaning: 'Nourishment.',             advice: 'Cook a slow meal today.' },
+  { num: 55, name: 'Abundance',        cn: '豐', meaning: 'Sun at noon.',             advice: 'Make hay while the sun shines.' },
+  { num: 63, name: 'After Completion', cn: '既濟', meaning: 'Order has arrived.',     advice: 'Stay alert — keep things tidy.' },
+];
+
+export interface IChingDaily {
+  num: number;
+  name: string;
+  cn: string;
+  meaning: string;
+  advice: string;
+}
+
+export function getIChingHexagram(): IChingDaily {
+  const seed = sgtDateSeed();
+  return HEXAGRAMS[((seed * 3187) >>> 0) % HEXAGRAMS.length];
+}
+
+// 8. Tong Shu — Do & Don't Today. Short cultural-almanac-style suggestions.
+export interface TongShuDaily {
+  goodFor: string[];   // 3–4 items
+  avoid: string[];     // 3 items
+}
+
+const TONG_SHU_GOOD_POOL = [
+  'Family meals', 'Visiting elders', 'Tidying', 'Quiet planning',
+  'Returning small favours', 'Walking outdoors', 'Praying / lighting incense',
+  'Calling an old friend', 'Reading',
+];
+const TONG_SHU_AVOID_POOL = [
+  'Big purchases', 'Lending money', 'Long arguments',
+  'Travelling far', 'Starting a court matter', 'Cutting hair',
+  'Major moves', 'Unfamiliar food',
+];
+
+export function getTongShu(): TongShuDaily {
+  const seed = sgtDateSeed();
+  const pickN = (pool: string[], count: number, salt: number): string[] => {
+    const out: string[] = [];
+    let s = (seed * salt + 7919) >>> 0;
+    while (out.length < count) {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      const item = pool[s % pool.length];
+      if (!out.includes(item)) out.push(item);
+    }
+    return out;
+  };
+  return {
+    goodFor: pickN(TONG_SHU_GOOD_POOL, 4, 311),
+    avoid:   pickN(TONG_SHU_AVOID_POOL, 3, 547),
+  };
+}
+
+// ─── Combined "Your Luck Today" summary + lucky-number generators ────
+// Aggregates the 5 systems into a single 0–10 score and produces 4D / TOTO
+// format suggestions. **For entertainment only — not a prediction.**
+
+export interface LuckyNumbers {
+  fourD: string[];     // 2 strings of 4 digits each, e.g. "1837"
+  toto: number[];      // 6 numbers, 1–49, sorted
+}
+
+export function getDailyLuckyNumbers(): LuckyNumbers {
+  const seed = sgtDateSeed();
+  // 4D — two distinct 4-digit strings derived from the seed.
+  const make4D = (salt: number): string => {
+    let s = ((seed * salt) >>> 0);
+    let str = '';
+    for (let i = 0; i < 4; i++) {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      str += (s % 10).toString();
+    }
+    return str;
+  };
+  const fourD = [make4D(2741), make4D(8629)];
+  if (fourD[0] === fourD[1]) fourD[1] = make4D(8631);
+
+  // TOTO — 6 distinct numbers from 1–49, biased toward auspicious pool.
+  const toto = new Set<number>();
+  let s = (seed * 5471) >>> 0;
+  // Seed with 3 from the auspicious pool first
+  for (let i = 0; i < 3 && toto.size < 6; i++) {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    toto.add(DAILY_AUSPICIOUS_POOL[s % DAILY_AUSPICIOUS_POOL.length]);
+  }
+  while (toto.size < 6) {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    toto.add((s % 49) + 1);
+  }
+  return {
+    fourD,
+    toto: [...toto].sort((a, b) => a - b),
+  };
+}
+
+export interface LuckSummary {
+  score: number;        // 0–10, blended from the 5 systems
+  oneLine: string;      // short user-facing summary
+}
+
+export function getLuckSummary(args: {
+  kauCim: KauCim;
+  zodiac: ZodiacToday;
+  bazi: BaZiLite;
+  almanac: DailyAlmanac;
+}): LuckSummary {
+  // Blend: Kau Cim 30%, Zodiac compat 30%, BaZi outlook 20%, day energy 20%
+  const baziScore =
+    args.bazi.outlook === 'growth' ? 9 :
+    args.bazi.outlook === 'support' ? 7.5 :
+    args.bazi.outlook === 'steady' ? 6.5 : 5;
+  const dayScore = args.almanac.energyScore / 10; // 0–10
+  const blended =
+    args.kauCim.rating * 0.30 +
+    args.zodiac.score   * 0.30 +
+    baziScore           * 0.20 +
+    dayScore            * 0.20;
+  const score = Math.round(blended * 10) / 10;
+
+  let oneLine: string;
+  if (score >= 8) {
+    oneLine = 'A bright day. Take one small bold step.';
+  } else if (score >= 6.5) {
+    oneLine = 'A steady, friendly day. Keep your usual pace.';
+  } else if (score >= 5) {
+    oneLine = 'A balanced day. Listen more, decide less.';
+  } else {
+    oneLine = 'A gentle day. Rest, and tomorrow turns lighter.';
+  }
+  return { score, oneLine };
+}
