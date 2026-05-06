@@ -294,6 +294,42 @@ export function deriveFromProfile(
   return pool.slice(0, count);
 }
 
+/**
+ * Roll a slot-machine outcome over the user's "ideal" numbers (from
+ * deriveFromProfile). For each slot, with probability `luck` the user keeps
+ * their ideal blessed number; otherwise the slot lands on a random 1–49.
+ * Returns the actual landed numbers and a parallel `hits` array marking
+ * which slots came up blessed — used by the draw screen to show the luck
+ * score ("3 of 6 blessed!").
+ *
+ * Premium passes luck=1.0 → every slot lands on the ideal. Free users get
+ * the lower LUCK_FREE rate so the paywall has bite.
+ */
+export function applyLuck(
+  ideal: number[],
+  luck: number
+): { numbers: number[]; hits: boolean[] } {
+  const numbers: number[] = [];
+  const hits: boolean[] = [];
+  for (const ideal_n of ideal) {
+    if (Math.random() < luck) {
+      numbers.push(ideal_n);
+      hits.push(true);
+    } else {
+      // Random 1–49, avoiding duplicates with already-landed slots.
+      let picked = 0;
+      let guard = 0;
+      do {
+        picked = Math.floor(Math.random() * 49) + 1;
+        guard++;
+      } while (numbers.includes(picked) && guard < 100);
+      numbers.push(picked);
+      hits.push(false);
+    }
+  }
+  return { numbers, hits };
+}
+
 /** Kept for backward-compatibility with any existing callers. */
 export function deriveNumbers(input: string, numberType: string): number[] {
   const digits = input.replace(/\D/g, '');

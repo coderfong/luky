@@ -40,3 +40,7 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Source prototype — not bundled with the app. The assets we need have
+# already been copied into assets/mfa/ and assets/ui/.
+/MYSTICAL-FOREST-ADVENTURE

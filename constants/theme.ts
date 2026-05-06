@@ -22,6 +22,13 @@ export const Colors = {
   success: '#5CB85C',
   divider: 'rgba(244,196,48,0.15)',
   overlay: 'rgba(7,7,10,0.88)',
+  // Embossed-text palette
+  cream: '#F8E9C3',
+  goldHighlight: '#FFE38A',
+  deepRed: '#8B0E1B',
+  maroon: '#5A0712',
+  brownDeep: '#1F0A06',
+  brownShadow: 'rgba(20,5,0,0.85)',
 } as const;
 
 export const Typography = {
@@ -29,6 +36,11 @@ export const Typography = {
   fontHeadingMedium: 'Lora_600SemiBold',
   fontBody: 'SourceSans3_400Regular',
   fontBodyMedium: 'SourceSans3_600SemiBold',
+  // Display fonts used for buttons, count chips, time-box digits and
+  // CN decorative headings. Embossed look is provided by EmbossedText.
+  fontDisplay: 'Cinzel_800ExtraBold',     // CTA buttons (ALL CAPS)
+  fontDigit: 'Teko_700Bold',              // count buttons + time-box digits
+  fontCnDisplay: 'NotoSerifSC_700Bold',   // 福 / 星 / 號 / 吉 / 祥
 
   // 55–80 audience: every size is bumped one step. Eyebrow/caption labels
   // never drop below 14pt; body text is 22pt baseline. iOS HIG calls 17pt

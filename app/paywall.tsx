@@ -33,7 +33,7 @@ export default function PaywallScreen() {
       // Simulating purchase for development — remove before App Store submission
       await new Promise(r => setTimeout(r, 800));
       await setPremium(true);
-      Alert.alert('Welcome to Premium!', 'You now have unlimited readings.', [
+      Alert.alert('Welcome to Premium!', 'Every spin now lands on your blessed numbers · 100% lucky.', [
         { text: 'Great!', onPress: () => router.back() },
       ]);
     } catch {

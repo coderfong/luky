@@ -5,8 +5,12 @@ import {
   SourceSans3_400Regular,
   SourceSans3_600SemiBold,
 } from '@expo-google-fonts/source-sans-3';
+import { Cinzel_800ExtraBold } from '@expo-google-fonts/cinzel';
+import { Teko_700Bold } from '@expo-google-fonts/teko';
+import { NotoSerifSC_700Bold } from '@expo-google-fonts/noto-serif-sc';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { Colors, Typography } from '../constants/theme';
 import { Strings } from '../constants/strings';
 import { TextSizeProvider } from '../contexts/TextSizeContext';
@@ -21,6 +25,9 @@ export default function RootLayout() {
     Lora_600SemiBold,
     SourceSans3_400Regular,
     SourceSans3_600SemiBold,
+    Cinzel_800ExtraBold,
+    Teko_700Bold,
+    NotoSerifSC_700Bold,
   });
 
   useEffect(() => {
@@ -53,9 +60,10 @@ export default function RootLayout() {
   }
 
   return (
-    <TextSizeProvider>
-      <StatusBar style="light" />
-      <Stack
+    <SafeAreaProvider>
+      <TextSizeProvider>
+        <StatusBar style="light" />
+        <Stack
         screenOptions={{
           headerStyle: { backgroundColor: Colors.background },
           headerTintColor: Colors.primary,
@@ -77,6 +85,7 @@ export default function RootLayout() {
         <Stack.Screen name="draw" options={{ headerShown: false }} />
         <Stack.Screen name="analysis" options={{ headerShown: false }} />
         <Stack.Screen name="almanac" options={{ headerShown: false }} />
+        <Stack.Screen name="auspicious-detail" options={{ headerShown: false }} />
         <Stack.Screen
           name="history"
           options={{ title: Strings.history.title }}
@@ -85,7 +94,8 @@ export default function RootLayout() {
           name="settings"
           options={{ title: Strings.settings.title }}
         />
-      </Stack>
-    </TextSizeProvider>
+        </Stack>
+      </TextSizeProvider>
+    </SafeAreaProvider>
   );
 }

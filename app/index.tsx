@@ -1,12 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, ScrollView, StyleSheet, TouchableOpacity, SafeAreaView,
-  Animated, Easing, TextInput,
+  Animated, Easing, TextInput, ImageBackground, Image,
 } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { AppText } from '../components/ui/AppText';
+import { EmbossedText } from '../components/ui/EmbossedText';
 import { NumberBall } from '../components/NumberBall';
 import { DisclaimerBanner } from '../components/DisclaimerBanner';
+import { LoadingFlash } from '../components/LoadingFlash';
 import { Colors, Spacing, Radius, Shadow } from '../constants/theme';
 import { Strings } from '../constants/strings';
 import {
@@ -16,7 +18,7 @@ import {
 } from '../lib/numbers';
 import {
   isOnboardingComplete, getProfile, UserProfile,
-  getTodayDrawCount, isPremium, FREE_DRAWS_PER_DAY,
+  getTodayDrawCount, isPremium, FREE_SPINS_PER_DAY,
   getDailyInsightCache, saveDailyInsightCache,
   getTodayReading,
   getTodaySignalNumber, setTodaySignalNumber,
@@ -35,7 +37,43 @@ const GROK_API_KEY =
   process.env.EXPO_PUBLIC_GROQ_API_KEY ??
   process.env.EXPO_PUBLIC_GROK_API_KEY ??
   '';
-const COUNT_OPTIONS = [1, 2, 3, 4, 5, 6];
+// Slot rack offers exactly two grid sizes: 5×3 or 6×3. Anything fewer than 5
+// looks empty in the reel frame; more than 6 won't fit on a phone width.
+const COUNT_OPTIONS = [5, 6];
+
+// Custom UI assets: backgrounds, cards, buttons, chips. Each is a 3× retina
+// PNG with the unwanted (white/black) backdrop already flood-filled out, so
+// they can ride on top of the dark app background without halos. Cards are
+// stretched via resizeMode="stretch" so they fill the layout box exactly.
+const ASSETS = {
+  bgApp: require('../assets/ui/bg-app.png'),
+  cardHero: require('../assets/ui/card-hero.png'),
+  cardSurface: require('../assets/ui/card-surface.png'),
+  cardPremium: require('../assets/ui/card-premium.png'),
+  chip: require('../assets/ui/chip.png'),
+  intentionCell: require('../assets/ui/intention-cell.png'),
+  intentionCellActive: require('../assets/ui/intention-cell-active.png'),
+  countBtn: require('../assets/ui/count-btn.png'),
+  countBtnActive: require('../assets/ui/count-btn-active.png'),
+  ctaGold: require('../assets/ui/cta-gold.png'),
+  ctaSecondary: require('../assets/ui/cta-secondary.png'),
+  timeBox: require('../assets/ui/time-box.png'),
+  // Oriental-casino label PNGs.
+  labelAiPowered: require('../assets/ui/label-ai-powered.png'),
+  labelTodaysPot: require('../assets/ui/label-todays-pot.png'),
+  labelBlessedReading: require('../assets/ui/label-blessed-reading.png'),
+  labelTodaysNumbers: require('../assets/ui/label-todays-numbers.png'),
+  labelAuspicious: require('../assets/ui/label-auspicious-numbers.png'),
+  labelBlessedPattern: require('../assets/ui/label-blessed-pattern.png'),
+  labelIntentions: require('../assets/ui/label-intentions.png'),
+  labelHowMany: require('../assets/ui/label-how-many.png'),
+  labelTodaysSignal: require('../assets/ui/label-todays-signal.png'),
+  labelViewPast: require('../assets/ui/label-view-past.png'),
+  ctaSaveRead: require('../assets/ui/cta-save-read.png'),
+  streakBadge: require('../assets/ui/streak.png'),
+  coinFu: require('../assets/ui/coin-fu.png'),
+  fortuneFrame: require('../assets/ui/frame.png'),
+} as const;
 
 function sgtCountdown(): string {
   const nowSgt = Date.now() + 8 * 60 * 60 * 1000;
@@ -77,6 +115,9 @@ export default function HomeScreen() {
   const [insightLoading, setInsightLoading] = useState(true);
   const [insightError, setInsightError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState('');
+  // Shows the LoadingFlash overlay while we navigate to /draw — covers the
+  // bundle-load latency so the user always sees animation, never a black screen.
+  const [navLoading, setNavLoading] = useState(false);
   const [todayReading, setTodayReading] = useState<TodayReading | null>(null);
   const [signalNumber, setSignalNumber] = useState<number | null>(null);
   const [signalDraft, setSignalDraft] = useState('');
@@ -219,8 +260,12 @@ export default function HomeScreen() {
 
   if (!ready) return null;
 
-  const hasReadingToday = !!todayReading && (premium === false || drawsToday > 0);
-  const canDraw = (premium || drawsToday < FREE_DRAWS_PER_DAY) && !todayReading;
+  const hasReadingToday = !!todayReading;
+  const spinsLeft = Math.max(0, FREE_SPINS_PER_DAY - drawsToday);
+  // Free user can still spin if they have spins remaining; premium always can.
+  // Once they commit a reading via the draw screen, hasReadingToday flips and
+  // they see the "today's reading" hero instead of the spin form.
+  const canDraw = premium || spinsLeft > 0;
 
   const toggleIntention = (id: IntentionId) => {
     setSelectedIntentions(prev =>
@@ -256,13 +301,20 @@ export default function HomeScreen() {
         pantangMode: profile.pantangMode,
       }
     );
-    router.push({
-      pathname: '/draw',
-      params: {
-        numbers: JSON.stringify(numbers),
-        intentions: JSON.stringify(selectedIntentions),
-      },
-    });
+    // Show the loading flash here on home so the user sees animation
+    // immediately, before the draw screen's JS bundle finishes loading.
+    setNavLoading(true);
+    setTimeout(() => {
+      router.push({
+        pathname: '/draw',
+        params: {
+          numbers: JSON.stringify(numbers),
+          intentions: JSON.stringify(selectedIntentions),
+        },
+      });
+      // Hide a beat later so the navigation transition stays covered.
+      setTimeout(() => setNavLoading(false), 600);
+    }, 900);
   };
 
   const handleSetSignal = async () => {
@@ -286,7 +338,7 @@ export default function HomeScreen() {
   };
 
   const firstName = profile?.name.split(' ')[0] ?? '';
-  const drawsLeft = Math.max(0, FREE_DRAWS_PER_DAY - drawsToday);
+  const drawsLeft = spinsLeft;
   // Free user temporarily sees the locked daily-extras when their streak
   // milestone unlocked a one-day preview. Premium users always see them.
   const dailyExtrasUnlocked = premium || previewUnlocked;
@@ -296,7 +348,10 @@ export default function HomeScreen() {
   const auraRotation = auraSpin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
 
   return (
-    <View style={styles.root}>
+    <ImageBackground source={ASSETS.bgApp} style={styles.root} resizeMode="cover">
+      {/* Navigation loading flash — covers home→draw transition. Long enough
+          to hide the bundle-load latency on the destination screen. */}
+      <LoadingFlash visible={navLoading} durationMs={1400} />
       <SafeAreaView style={styles.safe}>
         {/* Top ticker */}
         <View style={styles.ticker}>
@@ -326,40 +381,38 @@ export default function HomeScreen() {
         >
           {/* Wordmark */}
           <View style={styles.wordmark}>
-            <AppText style={styles.wordmarkCn}>福 星 號</AppText>
+            <EmbossedText variant="cn" fontSize={22} letterSpacing={6} containerStyle={styles.wordmarkCnWrap}>
+              福 星 號
+            </EmbossedText>
             <AppText style={styles.wordmarkEn}>
               BLESSED <AppText style={styles.wordmarkGold}>88</AppText>
             </AppText>
             {firstName ? (
               <AppText style={styles.greeting}>Welcome, {firstName}</AppText>
             ) : null}
-            <View style={styles.aiBadge}>
-              <AppText style={styles.aiBadgeText}>✦ AI POWERED · NEW READING DAILY</AppText>
-            </View>
+            <Image source={ASSETS.labelAiPowered} style={styles.aiBadgePng} resizeMode="contain" />
             {streak && streak.streakCount > 0 ? (
               <View
-                style={[
-                  styles.streakChip,
-                  streak.streakCount >= STREAK_PREVIEW_MILESTONE && styles.streakChipMilestone,
-                ]}
+                style={styles.streakWrap}
                 accessibilityLabel={`Streak: ${streak.streakCount} days`}
               >
-                <AppText style={styles.streakGlyph}>★</AppText>
-                <AppText style={styles.streakText}>
-                  {streak.streakCount}-day streak
-                  {previewUnlocked ? ' · pattern unlocked today' : ''}
-                </AppText>
+                <Image source={ASSETS.streakBadge} style={styles.streakBg} resizeMode="contain" />
+                <AppText style={styles.streakCount}>{streak.streakCount}</AppText>
               </View>
             ) : null}
           </View>
 
-          {/* Today's Blessing Pot — decorative, symbolic. NOT a real prize.
-              Pure visual element matching the temple/lottery aesthetic. */}
-          <View style={styles.potCard}>
+          {/* Today's Blessing Pot — decorative, symbolic. NOT a real prize. */}
+          <ImageBackground
+            source={ASSETS.cardHero}
+            style={styles.potCard}
+            imageStyle={styles.cardHeroImage}
+            resizeMode="stretch"
+          >
             <View style={styles.potAura} />
             <View style={styles.potHeader}>
-              <AppText style={styles.potEyebrow}>◉ TODAY'S BLESSING POT</AppText>
-              <AppText style={styles.potGlyph}>福</AppText>
+              <Image source={ASSETS.labelTodaysPot} style={styles.potEyebrowPng} resizeMode="contain" />
+              <Image source={ASSETS.coinFu} style={styles.potCoin} resizeMode="contain" />
             </View>
             <AppText style={styles.potAmount}>{dailyBlessingPot()}</AppText>
             <AppText style={styles.potCaption}>
@@ -370,21 +423,26 @@ export default function HomeScreen() {
                 const parts = (countdown || sgtCountdown()).split(':');
                 const labels = ['HRS', 'MIN', 'SEC'];
                 return parts.map((p, i) => (
-                  <View key={i} style={styles.potTimeBox}>
-                    <AppText style={styles.potTimeValue}>{p}</AppText>
+                  <ImageBackground
+                    key={i}
+                    source={ASSETS.timeBox}
+                    style={styles.potTimeBox}
+                    imageStyle={styles.timeBoxImage}
+                    resizeMode="stretch"
+                  >
+                    <EmbossedText variant="time" fontSize={22}>{p}</EmbossedText>
                     <AppText style={styles.potTimeLabel}>{labels[i]}</AppText>
-                  </View>
+                  </ImageBackground>
                 ));
               })()}
             </View>
             <AppText style={styles.potDisclaimer}>
               Resets at Singapore midnight · entertainment only
             </AppText>
-          </View>
+          </ImageBackground>
 
           {/* Today's Reflection strip — single plain-language line */}
           <TouchableOpacity
-            style={styles.almanacStrip}
             activeOpacity={0.85}
             onPress={() => {
               track('almanac_strip_tapped');
@@ -393,25 +451,37 @@ export default function HomeScreen() {
             accessibilityRole="button"
             accessibilityLabel={Strings.home.almanacStrip.eyebrow}
           >
-            <AppText style={styles.almanacStripEyebrow}>{Strings.home.almanacStrip.eyebrow}</AppText>
-            <View style={styles.almanacStripBody}>
-              <AppText style={styles.almanacStripLine}>
-                {almanac.energy === 'bright' ? Strings.home.almanacStrip.bright
-                  : almanac.energy === 'steady' ? Strings.home.almanacStrip.steady
-                  : Strings.home.almanacStrip.gentle}
-              </AppText>
-              <AppText style={styles.almanacStripCta}>{Strings.home.almanacStrip.cta} →</AppText>
-            </View>
+            <ImageBackground
+              source={ASSETS.cardSurface}
+              style={styles.almanacStrip}
+              imageStyle={styles.cardSurfaceImage}
+              resizeMode="stretch"
+            >
+              <AppText style={styles.almanacStripEyebrow}>{Strings.home.almanacStrip.eyebrow}</AppText>
+              <View style={styles.almanacStripBody}>
+                <AppText style={styles.almanacStripLine}>
+                  {almanac.energy === 'bright' ? Strings.home.almanacStrip.bright
+                    : almanac.energy === 'steady' ? Strings.home.almanacStrip.steady
+                    : Strings.home.almanacStrip.gentle}
+                </AppText>
+                <AppText style={styles.almanacStripCta}>{Strings.home.almanacStrip.cta} →</AppText>
+              </View>
+            </ImageBackground>
           </TouchableOpacity>
 
           {/* Daily draw status — only shown when no reading yet */}
           {!hasReadingToday && (
-            <View style={[styles.drawBadge, premium && styles.drawBadgePremium]}>
+            <ImageBackground
+              source={ASSETS.cardSurface}
+              style={[styles.drawBadge, premium && styles.drawBadgePremium]}
+              imageStyle={styles.cardSurfaceSmallImage}
+              resizeMode="stretch"
+            >
               <AppText style={styles.drawBadgeText}>
                 {premium
                   ? Strings.home.premiumBadge
                   : drawsLeft > 0
-                    ? `${drawsLeft} free reading${drawsLeft > 1 ? 's' : ''} today`
+                    ? `${drawsLeft} free spin${drawsLeft > 1 ? 's' : ''} today`
                     : countdown
                       ? `Resets in ${countdown}`
                       : Strings.home.noFreeReadings}
@@ -426,23 +496,26 @@ export default function HomeScreen() {
                   <AppText style={styles.upgradeLink}>Upgrade →</AppText>
                 </TouchableOpacity>
               )}
-            </View>
+            </ImageBackground>
           )}
 
           {/* Today's locked-in reading — hero card with 2x3 number grid */}
           {hasReadingToday && todayReading && (
-            <View style={styles.todayHero}>
+            <ImageBackground
+              source={ASSETS.cardHero}
+              style={styles.todayHero}
+              imageStyle={styles.cardHeroImage}
+              resizeMode="stretch"
+            >
               <View style={styles.todayHeroHeader}>
                 <View style={{ flex: 1 }}>
-                  <AppText style={styles.todayHeroEyebrow}>★ YOUR BLESSED READING · {todayLabel().toUpperCase()}</AppText>
-                  <AppText style={styles.todayHeroTitle}>Today's Numbers</AppText>
+                  <Image source={ASSETS.labelBlessedReading} style={styles.todayHeroEyebrowPng} resizeMode="contain" />
+                  <Image source={ASSETS.labelTodaysNumbers} style={styles.todayHeroTitlePng} resizeMode="contain" />
+                  <AppText style={styles.todayHeroDate}>{todayLabel().toUpperCase()}</AppText>
                 </View>
-                <Animated.Text
-                  style={[styles.todayHeroGlyph, { transform: [{ rotate: auraRotation }] }]}
-                  allowFontScaling={false}
-                >
-                  福
-                </Animated.Text>
+                <Animated.View style={{ transform: [{ rotate: auraRotation }] }}>
+                  <EmbossedText variant="cn" fontSize={34}>福</EmbossedText>
+                </Animated.View>
               </View>
 
               <View style={styles.todayHeroBalls}>
@@ -460,68 +533,95 @@ export default function HomeScreen() {
               </View>
 
               <TouchableOpacity
-                style={styles.todayHeroCta}
                 onPress={handleReveal}
                 activeOpacity={0.85}
                 accessibilityRole="button"
               >
-                <AppText style={styles.todayHeroCtaLabel}>OPEN MY READING →</AppText>
+                <ImageBackground
+                  source={ASSETS.ctaGold}
+                  style={styles.todayHeroCta}
+                  imageStyle={styles.ctaImage}
+                  resizeMode="stretch"
+                >
+                  <EmbossedText variant="cta" fontSize={15} letterSpacing={0.8} numberOfLines={1}>
+                    OPEN MY READING →
+                  </EmbossedText>
+                </ImageBackground>
               </TouchableOpacity>
 
               <AppText style={styles.todayHeroNote}>
                 Returns in {countdown || sgtCountdown()} · Singapore Time
               </AppText>
-            </View>
+            </ImageBackground>
           )}
 
           {/* Today's 3 auspicious numbers (community / shared) */}
-          <View style={styles.featuredCard}>
+          <ImageBackground
+            source={ASSETS.cardSurface}
+            style={styles.featuredCard}
+            imageStyle={styles.cardSurfaceImage}
+            resizeMode="stretch"
+          >
             <View style={styles.featuredHeader}>
               <View style={{ flex: 1 }}>
-                <AppText style={styles.featuredLabel}>TODAY'S AUSPICIOUS NUMBERS</AppText>
+                <Image source={ASSETS.labelAuspicious} style={styles.featuredLabelPng} resizeMode="contain" />
                 <AppText style={styles.featuredDate}>
                   AI Powered · refreshed daily · {todayLabel()}
                 </AppText>
               </View>
-              <AppText style={styles.featuredGlyph}>吉</AppText>
+              <EmbossedText variant="cn" fontSize={26}>吉</EmbossedText>
             </View>
 
             <View style={styles.ballRow}>
-              {featuredNumbers.map((n, i) => (
-                <View key={i} style={styles.featuredBallItem}>
-                  <NumberBall number={n} size={68} variant="red" />
-                  <AppText style={styles.featuredBallNote}>
-                    {CULTURAL_NUMBER_NOTES[n] ?? getNumberMeaning(n)}
-                  </AppText>
-                  <AppText style={styles.featuredBallMeaning}>
-                    {insightLoading
-                      ? '· · ·'
-                      : (insightMap[n] ?? '')}
-                  </AppText>
-                </View>
-              ))}
+              {featuredNumbers.map((n, i) => {
+                const meaning = CULTURAL_NUMBER_NOTES[n] ?? getNumberMeaning(n);
+                return (
+                  <TouchableOpacity
+                    key={i}
+                    style={styles.featuredBallItem}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Open detail for ${n}`}
+                    activeOpacity={0.85}
+                    onPress={() => router.push({
+                      pathname: '/auspicious-detail',
+                      params: {
+                        n: String(n),
+                        meaning,
+                        insight: insightLoading ? '' : (insightMap[n] ?? ''),
+                      },
+                    })}
+                  >
+                    <NumberBall number={n} size={68} variant="red" />
+                    <AppText style={styles.featuredBallNote}>{meaning}</AppText>
+                    <AppText style={styles.featuredBallTap}>Tap to read →</AppText>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
             {insightError && (
               <AppText style={styles.featuredErrorNote}>{insightError}</AppText>
             )}
-          </View>
+          </ImageBackground>
 
           {/* Daily blessed pattern — theme, timing, direction, avoid. Premium-gated. */}
           <Animated.View
-            style={[
-              styles.extrasCard,
-              {
-                opacity: extrasAnim,
-                transform: [{ translateY: extrasAnim.interpolate({ inputRange: [0, 1], outputRange: [16, 0] }) }],
-              },
-            ]}
+            style={{
+              opacity: extrasAnim,
+              transform: [{ translateY: extrasAnim.interpolate({ inputRange: [0, 1], outputRange: [16, 0] }) }],
+            }}
+          >
+          <ImageBackground
+            source={ASSETS.cardPremium}
+            style={styles.extrasCard}
+            imageStyle={styles.cardPremiumImage}
+            resizeMode="stretch"
           >
             <View style={styles.extrasHeader}>
               <View style={{ flex: 1 }}>
-                <AppText style={styles.extrasLabel}>{Strings.home.dailyExtras.title}</AppText>
+                <Image source={ASSETS.labelBlessedPattern} style={styles.extrasLabelPng} resizeMode="contain" />
                 <AppText style={styles.extrasDate}>{todayLabel()} · Singapore Time</AppText>
               </View>
-              <AppText style={styles.extrasGlyph}>祥</AppText>
+              <Image source={ASSETS.coinFu} style={styles.extrasCoin} resizeMode="contain" />
             </View>
 
             {/* Free for all: theme + best timing */}
@@ -575,62 +675,13 @@ export default function HomeScreen() {
                 </TouchableOpacity>
               )}
             </View>
+          </ImageBackground>
           </Animated.View>
 
           {/* Entry form — only when allowed to draw */}
           {!hasReadingToday && (
             <>
-              {/* Today's personal signal — a single 1–49 the user has noticed.
-                  Stored locally for the day; folded into deriveFromProfile when
-                  the user reveals. checkContent gates the input so a gambling
-                  phrase typed in here can never reach storage. */}
-              <AppText style={styles.sectionLabel}>◉ {Strings.home.signal.label}</AppText>
-              <AppText style={styles.sectionHint}>{Strings.home.signal.hint}</AppText>
-              {signalNumber ? (
-                <View style={styles.signalRow}>
-                  <View style={styles.signalChip}>
-                    <AppText style={styles.signalChipNumber}>{signalNumber}</AppText>
-                    <AppText style={styles.signalChipLabel}>{Strings.home.signal.savedLabel}</AppText>
-                  </View>
-                  <TouchableOpacity
-                    onPress={() => { setSignalNumber(null); setSignalDraft(''); setSignalError(null); }}
-                    accessibilityRole="button"
-                    accessibilityLabel={Strings.home.signal.clear}
-                  >
-                    <AppText style={styles.signalClear}>{Strings.home.signal.clear}</AppText>
-                  </TouchableOpacity>
-                </View>
-              ) : (
-                <View style={styles.signalRow}>
-                  <TextInput
-                    style={[styles.signalInput, signalError ? styles.signalInputError : null]}
-                    value={signalDraft}
-                    onChangeText={(t) => {
-                      setSignalDraft(t.replace(/\D/g, '').slice(0, 2));
-                      setSignalError(null);
-                    }}
-                    keyboardType="number-pad"
-                    placeholder={Strings.home.signal.placeholder}
-                    placeholderTextColor={Colors.textMuted}
-                    maxLength={2}
-                    accessibilityLabel={Strings.home.signal.label}
-                  />
-                  <TouchableOpacity
-                    style={[styles.signalCta, !signalDraft && styles.signalCtaDisabled]}
-                    onPress={handleSetSignal}
-                    disabled={!signalDraft}
-                    activeOpacity={0.85}
-                    accessibilityRole="button"
-                  >
-                    <AppText style={styles.signalCtaLabel}>{Strings.home.signal.cta}</AppText>
-                  </TouchableOpacity>
-                </View>
-              )}
-              {signalError ? (
-                <AppText style={styles.signalErrorText}>{signalError}</AppText>
-              ) : null}
-
-              <AppText style={[styles.sectionLabel, { marginTop: Spacing.lg }]}>◉ {Strings.home.intentionLabel}</AppText>
+              <Image source={ASSETS.labelIntentions} style={styles.sectionLabelPng} resizeMode="contain" />
               <AppText style={styles.sectionHint}>{Strings.home.intentionHint}</AppText>
               <View style={styles.intentionGrid}>
                 {INTENTIONS.map(i => {
@@ -638,64 +689,83 @@ export default function HomeScreen() {
                   return (
                     <TouchableOpacity
                       key={i.id}
-                      style={[styles.intentionCell, active && styles.intentionCellActive]}
+                      style={styles.intentionCellWrap}
                       onPress={() => toggleIntention(i.id as IntentionId)}
                       activeOpacity={0.8}
                       accessibilityRole="checkbox"
                       accessibilityState={{ checked: active }}
                     >
-                      <AppText style={[styles.intentionGlyph, active && styles.intentionGlyphActive]}>
-                        {i.glyph}
-                      </AppText>
-                      <AppText style={[styles.intentionLabel, active && styles.intentionLabelActive]}>
-                        {i.label}
-                      </AppText>
+                      <ImageBackground
+                        source={active ? ASSETS.intentionCellActive : ASSETS.intentionCell}
+                        style={styles.intentionCell}
+                        imageStyle={styles.intentionCellImage}
+                        resizeMode="stretch"
+                      >
+                        <AppText style={[styles.intentionGlyph, active && styles.intentionGlyphActive]}>
+                          {i.glyph}
+                        </AppText>
+                        <AppText style={[styles.intentionLabel, active && styles.intentionLabelActive]}>
+                          {i.label}
+                        </AppText>
+                      </ImageBackground>
                     </TouchableOpacity>
                   );
                 })}
               </View>
 
-              <AppText style={styles.sectionLabel}>◉ {Strings.home.countLabel}</AppText>
+              <Image source={ASSETS.labelHowMany} style={styles.sectionLabelPng} resizeMode="contain" />
               <View style={styles.countRow}>
                 {COUNT_OPTIONS.map(n => (
                   <TouchableOpacity
                     key={n}
-                    style={[styles.countBtn, selectedCount === n && styles.countBtnActive]}
                     onPress={() => setSelectedCount(n)}
                     activeOpacity={0.8}
                     accessibilityRole="radio"
                     accessibilityState={{ selected: selectedCount === n }}
                   >
-                    <AppText style={[styles.countLabel, selectedCount === n && styles.countLabelActive]}>
-                      {n}
-                    </AppText>
+                    <ImageBackground
+                      source={selectedCount === n ? ASSETS.countBtnActive : ASSETS.countBtn}
+                      style={styles.countBtn}
+                      imageStyle={styles.countBtnImage}
+                      resizeMode="stretch"
+                    >
+                      <EmbossedText variant="count" fontSize={26}>{n}</EmbossedText>
+                    </ImageBackground>
                   </TouchableOpacity>
                 ))}
               </View>
 
               <TouchableOpacity
-                style={[styles.cta, !canDraw && styles.ctaLocked]}
                 onPress={handleReveal}
                 activeOpacity={0.85}
                 accessibilityRole="button"
               >
-                <AppText style={[styles.ctaLabel, !canDraw && styles.ctaLabelLocked]}>
-                  {!profile
-                    ? 'SET UP YOUR PROFILE →'
-                    : canDraw
-                      ? 'REVEAL MY BLESSED NUMBERS'
-                      : 'UNLOCK MORE READINGS'}
-                </AppText>
-                {profile && (
-                  <AppText style={[styles.ctaCn, !canDraw && styles.ctaLabelLocked]}>→</AppText>
-                )}
+                <ImageBackground
+                  source={canDraw ? ASSETS.ctaGold : ASSETS.ctaSecondary}
+                  style={styles.cta}
+                  imageStyle={styles.ctaImage}
+                  resizeMode="stretch"
+                >
+                  <EmbossedText
+                    variant={canDraw ? 'cta' : 'ctaSecondary'}
+                    fontSize={15}
+                    letterSpacing={0.8}
+                    numberOfLines={1}
+                  >
+                    {!profile
+                      ? 'SET UP YOUR PROFILE →'
+                      : canDraw
+                        ? 'REVEAL MY BLESSED NUMBERS'
+                        : 'UNLOCK MORE READINGS'}
+                  </EmbossedText>
+                </ImageBackground>
               </TouchableOpacity>
               <AppText style={styles.ctaNote}>
                 {!profile
                   ? 'Enter your name & birth date to begin'
                   : canDraw
-                    ? `${selectedCount} NUMBER${selectedCount > 1 ? 'S' : ''} · PERSONAL READING`
-                    : 'Upgrade to Premium for unlimited daily readings'}
+                    ? `${selectedCount} REELS · ${premium ? '100% LUCKY' : '~40% LUCK PER SLOT'}`
+                    : 'Upgrade for unlimited spins · 100% blessed'}
               </AppText>
             </>
           )}
@@ -706,19 +776,40 @@ export default function HomeScreen() {
             onPress={() => router.push('/history')}
             activeOpacity={0.7}
           >
-            <AppText style={styles.historyLinkText}>◉ VIEW PAST READINGS</AppText>
+            <Image source={ASSETS.labelViewPast} style={styles.historyLinkPng} resizeMode="contain" />
           </TouchableOpacity>
         </ScrollView>
         </Animated.View>
         <DisclaimerBanner />
       </SafeAreaView>
-    </View>
+    </ImageBackground>
   );
 }
+
+// Single drop-shadow recipe re-used by every body text that sits on top of
+// a card image — without it, white/cream copy disappears against the busier
+// asset textures.
+const READ_SHADOW = {
+  textShadowColor: 'rgba(0,0,0,0.85)',
+  textShadowOffset: { width: 0, height: 1.5 },
+  textShadowRadius: 4,
+} as const;
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
   safe: { flex: 1 },
+
+  // imageStyle clips for ImageBackground — keep the rounded card silhouette
+  // bounded to its layout box rather than the asset's natural rectangle.
+  cardHeroImage:    { borderRadius: Radius.lg },
+  cardSurfaceImage: { borderRadius: Radius.lg },
+  cardSurfaceSmallImage: { borderRadius: Radius.sm },
+  cardPremiumImage: { borderRadius: Radius.lg },
+  chipImage:        { borderRadius: Radius.full },
+  ctaImage:         { borderRadius: Radius.md },
+  intentionCellImage: { borderRadius: Radius.md },
+  countBtnImage:    { borderRadius: 30 },
+  timeBoxImage:     { borderRadius: Radius.sm },
 
   ticker: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
@@ -742,30 +833,66 @@ const styles = StyleSheet.create({
   },
 
   wordmark: { alignItems: 'center', marginBottom: Spacing.md },
-  wordmarkCn: {
-    fontFamily: 'Lora_600SemiBold', fontSize: 20,
-    letterSpacing: 8, color: Colors.gold, marginBottom: 4,
-  },
+  wordmarkCnWrap: { marginBottom: 6 },
   wordmarkEn: {
     fontFamily: 'SourceSans3_600SemiBold',
     fontSize: 40, fontWeight: '900', color: Colors.textPrimary,
     letterSpacing: -1.5, lineHeight: 44,
+    textAlign: 'center',
+    ...READ_SHADOW,
   },
   wordmarkGold: { color: Colors.gold },
   greeting: {
     fontFamily: 'Lora_600SemiBold',
     fontSize: 18, color: Colors.textSecondary, marginTop: 8, letterSpacing: 1,
+    textAlign: 'center',
+    ...READ_SHADOW,
   },
   aiBadge: {
     marginTop: 10,
     paddingHorizontal: 12, paddingVertical: 5,
-    backgroundColor: 'rgba(244,196,48,0.14)',
     borderRadius: Radius.full,
-    borderWidth: 1, borderColor: 'rgba(244,196,48,0.45)',
+    overflow: 'hidden',
+  },
+  // PNG-backed AI Powered chip — replaces the chip+text combo above.
+  aiBadgePng: {
+    width: 300,
+    height: 36,
+    marginTop: 10,
+    alignSelf: 'center',
+  },
+  // PNG streak chip; we paint the day count over the empty pill on the left.
+  // Streak chip — streak.png art has a blank ○ on the left where the day
+  // count is painted on top.
+  streakWrap: {
+    width: 240,
+    height: 56,
+    marginTop: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  streakBg: {
+    width: '100%', height: '100%',
+  },
+  streakCount: {
+    position: 'absolute',
+    // The painted ○ sits at roughly 17% from the left, vertically centred.
+    // We position the digit caption to overlap the ○ centre.
+    left: 28, top: 14,
+    width: 36,
+    textAlign: 'center',
+    fontFamily: 'Cinzel_800ExtraBold',
+    fontSize: 22, color: '#FFE082',
+    textShadowColor: 'rgba(0,0,0,0.85)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
   aiBadgeText: {
     fontFamily: 'SourceSans3_600SemiBold',
     fontSize: 11, letterSpacing: 1.5, color: Colors.gold,
+    textAlign: 'center',
+    ...READ_SHADOW,
   },
 
   streakChip: {
@@ -773,32 +900,27 @@ const styles = StyleSheet.create({
     marginTop: 10,
     paddingHorizontal: 14, paddingVertical: 8,
     borderRadius: Radius.full,
-    backgroundColor: Colors.surface,
-    borderWidth: 1, borderColor: Colors.border,
+    overflow: 'hidden',
     maxWidth: '100%',
     flexShrink: 1,
   },
-  streakChipMilestone: {
-    borderColor: Colors.gold,
-    backgroundColor: Colors.surfaceAlt,
-  },
+  streakChipMilestone: {},
   streakGlyph: {
     fontFamily: 'Lora_700Bold', fontSize: 14, color: Colors.gold,
+    ...READ_SHADOW,
   },
   streakText: {
     flexShrink: 1,
     fontFamily: 'SourceSans3_600SemiBold',
-    fontSize: 13, color: Colors.textSecondary, letterSpacing: 0.5,
+    fontSize: 13, color: Colors.cream, letterSpacing: 0.5,
+    ...READ_SHADOW,
   },
 
-  // Today's Blessing Pot — decorative jackpot-style card
   potCard: {
-    backgroundColor: Colors.primary,
     borderRadius: Radius.lg,
-    padding: Spacing.lg,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.lg + 4,
     marginBottom: Spacing.md,
-    borderWidth: 1.5,
-    borderColor: Colors.gold,
     overflow: 'hidden',
     ...Shadow.elevated,
   },
@@ -816,63 +938,68 @@ const styles = StyleSheet.create({
     fontFamily: 'SourceSans3_600SemiBold',
     fontSize: 12, letterSpacing: 2, color: Colors.gold,
     flexShrink: 1,
+    ...READ_SHADOW,
   },
-  potGlyph: {
-    fontFamily: 'Lora_700Bold',
-    fontSize: 28, color: Colors.gold,
+  potEyebrowPng: {
+    width: 240, height: 38,
+    flexShrink: 1,
+    alignSelf: 'flex-start',
+  },
+  potCoin: {
+    width: 40, height: 40,
   },
   potAmount: {
-    fontFamily: 'SourceSans3_600SemiBold',
-    fontSize: 38, fontWeight: '900',
-    color: Colors.textPrimary, letterSpacing: -1,
+    fontFamily: 'Teko_700Bold',
+    fontSize: 32, color: Colors.gold, letterSpacing: 0,
     marginBottom: 4,
+    textAlign: 'left',
+    ...READ_SHADOW,
   },
   potCaption: {
     fontFamily: 'SourceSans3_400Regular',
-    fontSize: 13, color: 'rgba(255,248,231,0.80)',
+    fontSize: 13, color: Colors.cream,
     marginBottom: 14,
+    ...READ_SHADOW,
   },
   potCountdownRow: {
     flexDirection: 'row', gap: 8,
     marginBottom: 10,
   },
   potTimeBox: {
-    flex: 1, paddingVertical: 10, paddingHorizontal: 6,
-    backgroundColor: 'rgba(0,0,0,0.30)',
+    flex: 1, paddingVertical: 6, paddingHorizontal: 6,
     borderRadius: Radius.sm,
+    overflow: 'hidden',
     alignItems: 'center',
-  },
-  potTimeValue: {
-    fontFamily: 'Lora_700Bold',
-    fontSize: 22, color: Colors.gold,
-    letterSpacing: -0.5,
   },
   potTimeLabel: {
     fontFamily: 'SourceSans3_600SemiBold',
     fontSize: 10, letterSpacing: 1.5,
-    color: 'rgba(255,255,255,0.65)',
-    marginTop: 2,
+    color: Colors.cream,
+    marginTop: 0,
+    textAlign: 'center',
+    ...READ_SHADOW,
   },
   potDisclaimer: {
     fontFamily: 'SourceSans3_400Regular',
     fontSize: 11, fontStyle: 'italic',
-    color: 'rgba(255,248,231,0.65)',
+    color: Colors.cream,
     textAlign: 'center',
+    ...READ_SHADOW,
   },
 
   // Today's Reflection strip — one plain line, large type
   almanacStrip: {
-    backgroundColor: Colors.surface,
     borderRadius: Radius.md,
-    borderWidth: 1, borderColor: Colors.border,
-    paddingVertical: Spacing.md,
-    paddingHorizontal: Spacing.md,
+    overflow: 'hidden',
+    paddingVertical: Spacing.md + 2,
+    paddingHorizontal: Spacing.lg,
     marginBottom: Spacing.md,
   },
   almanacStripEyebrow: {
     fontFamily: 'SourceSans3_600SemiBold',
     fontSize: 12, letterSpacing: 2, color: Colors.gold,
     marginBottom: 6,
+    ...READ_SHADOW,
   },
   almanacStripBody: {
     flexDirection: 'row', alignItems: 'center',
@@ -881,11 +1008,13 @@ const styles = StyleSheet.create({
   almanacStripLine: {
     flex: 1,
     fontFamily: 'Lora_600SemiBold',
-    fontSize: 18, color: Colors.textPrimary, lineHeight: 24,
+    fontSize: 18, color: Colors.cream, lineHeight: 24,
+    ...READ_SHADOW,
   },
   almanacStripCta: {
     fontFamily: 'SourceSans3_600SemiBold',
     fontSize: 14, color: Colors.gold,
+    ...READ_SHADOW,
   },
 
   signalRow: {
@@ -904,31 +1033,28 @@ const styles = StyleSheet.create({
   },
   signalInputError: { borderColor: Colors.error },
   signalCta: {
-    backgroundColor: Colors.primary,
     borderRadius: Radius.md,
+    overflow: 'hidden',
     paddingHorizontal: Spacing.lg, paddingVertical: 14,
     alignItems: 'center', justifyContent: 'center',
   },
   signalCtaDisabled: { opacity: 0.4 },
-  signalCtaLabel: {
-    fontFamily: 'SourceSans3_600SemiBold',
-    fontSize: 14, letterSpacing: 1.5, color: Colors.gold,
-  },
   signalChip: {
     flex: 1,
     flexDirection: 'row', alignItems: 'center', gap: 12,
     paddingHorizontal: Spacing.md, paddingVertical: 12,
-    backgroundColor: Colors.surfaceAlt,
     borderRadius: Radius.md,
-    borderWidth: 1, borderColor: Colors.gold,
+    overflow: 'hidden',
   },
   signalChipNumber: {
-    fontFamily: 'Lora_700Bold', fontSize: 24, color: Colors.gold,
+    fontFamily: 'Teko_700Bold', fontSize: 28, color: Colors.gold,
     minWidth: 32, textAlign: 'center',
+    ...READ_SHADOW,
   },
   signalChipLabel: {
     fontFamily: 'SourceSans3_600SemiBold',
-    fontSize: 12, letterSpacing: 1.5, color: Colors.textMuted,
+    fontSize: 12, letterSpacing: 1.5, color: Colors.cream,
+    ...READ_SHADOW,
   },
   signalClear: {
     fontFamily: 'SourceSans3_600SemiBold',
@@ -943,30 +1069,39 @@ const styles = StyleSheet.create({
   drawBadge: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     flexWrap: 'wrap', gap: 6,
-    backgroundColor: Colors.surface, borderRadius: Radius.sm,
-    borderWidth: 1, borderColor: Colors.border,
+    borderRadius: Radius.sm,
+    overflow: 'hidden',
     paddingHorizontal: 14, paddingVertical: 12, marginBottom: Spacing.lg,
   },
-  drawBadgePremium: { borderColor: Colors.gold },
+  drawBadgePremium: {},
   drawBadgeText: {
     fontFamily: 'SourceSans3_600SemiBold',
-    fontSize: 16, color: Colors.textSecondary, flexShrink: 1,
+    fontSize: 16, color: Colors.cream, flexShrink: 1,
+    ...READ_SHADOW,
   },
   upgradeLink: {
     fontFamily: 'SourceSans3_600SemiBold',
     fontSize: 16, color: Colors.gold,
     flexShrink: 0,
+    ...READ_SHADOW,
   },
 
-  // Today's locked reading hero — 2x3 grid
+  // Today's locked reading hero, wrapped in fortune-frame.png. The frame
+  // artwork has its own gold border & dragons on the outer ~36px, so we
+  // pad the card more aggressively so content lands inside the central
+  // panels.
   todayHero: {
-    backgroundColor: Colors.primary,
     borderRadius: Radius.lg,
-    padding: Spacing.lg,
+    paddingHorizontal: Spacing.xl + 12,
+    paddingVertical: Spacing.xl + 16,
     marginBottom: Spacing.lg,
-    borderWidth: 1.5,
-    borderColor: Colors.gold,
-    ...Shadow.elevated,
+    minHeight: 460,
+    overflow: 'hidden',
+  },
+  fortuneFrameImage: {
+    // Frame is a single 9-slice ornament — let it stretch fully so
+    // content panels align with the card's interior.
+    borderRadius: Radius.lg,
   },
   todayHeroHeader: {
     flexDirection: 'row',
@@ -977,17 +1112,30 @@ const styles = StyleSheet.create({
   todayHeroEyebrow: {
     fontFamily: 'SourceSans3_600SemiBold',
     fontSize: 12, letterSpacing: 2, color: Colors.gold,
+    ...READ_SHADOW,
+  },
+  todayHeroEyebrowPng: {
+    width: 300, height: 36,
+    alignSelf: 'flex-start',
   },
   todayHeroTitle: {
-    fontFamily: 'SourceSans3_600SemiBold',
-    fontSize: 30, fontWeight: '900',
-    color: Colors.textPrimary,
-    letterSpacing: -0.5,
+    fontFamily: 'Cinzel_800ExtraBold',
+    fontSize: 20,
+    color: Colors.cream,
+    letterSpacing: 0.5,
     marginTop: 4,
+    ...READ_SHADOW,
   },
-  todayHeroGlyph: {
-    fontFamily: 'Lora_700Bold',
-    fontSize: 42, color: Colors.gold,
+  todayHeroTitlePng: {
+    width: 260, height: 52,
+    marginTop: 4,
+    alignSelf: 'flex-start',
+  },
+  todayHeroDate: {
+    fontFamily: 'SourceSans3_600SemiBold',
+    fontSize: 11, letterSpacing: 1.6, color: Colors.cream,
+    marginTop: 2,
+    ...READ_SHADOW,
   },
   // 3 columns × 2 rows. Each item is 30% width and we let flexbox lay out 2 rows.
   todayHeroBalls: {
@@ -1003,17 +1151,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   todayHeroCta: {
-    backgroundColor: Colors.gold,
     paddingVertical: 18,
     borderRadius: Radius.md,
+    overflow: 'hidden',
     alignItems: 'center',
+    justifyContent: 'center',
     marginTop: Spacing.sm,
-    ...Shadow.gold,
-  },
-  todayHeroCtaLabel: {
-    fontFamily: 'SourceSans3_600SemiBold',
-    fontSize: 18, fontWeight: '900', letterSpacing: 0.5,
-    color: Colors.background,
   },
   todayHeroNote: {
     fontFamily: 'SourceSans3_400Regular',
@@ -1022,12 +1165,15 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 12,
     fontVariant: ['tabular-nums'],
+    ...READ_SHADOW,
   },
 
   featuredCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: Radius.lg, padding: Spacing.lg,
-    marginBottom: Spacing.lg, borderWidth: 1, borderColor: Colors.border,
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.lg + 4,
+    marginBottom: Spacing.lg,
+    overflow: 'hidden',
     ...Shadow.card,
   },
   featuredHeader: {
@@ -1036,12 +1182,17 @@ const styles = StyleSheet.create({
   },
   featuredLabel: {
     fontFamily: 'SourceSans3_600SemiBold', fontSize: 12, letterSpacing: 2, color: Colors.gold,
+    ...READ_SHADOW,
+  },
+  featuredLabelPng: {
+    width: 300, height: 36,
+    alignSelf: 'flex-start',
   },
   featuredDate: {
     fontFamily: 'SourceSans3_400Regular', fontSize: 15,
-    color: Colors.textSecondary, marginTop: 4,
+    color: Colors.cream, marginTop: 4,
+    ...READ_SHADOW,
   },
-  featuredGlyph: { fontFamily: 'Lora_700Bold', fontSize: 30, color: Colors.gold },
   ballRow: {
     flexDirection: 'row', justifyContent: 'space-around',
   },
@@ -1053,11 +1204,20 @@ const styles = StyleSheet.create({
     fontSize: 12, color: Colors.gold,
     textAlign: 'center', marginTop: 8, lineHeight: 16,
     letterSpacing: 0.3,
+    ...READ_SHADOW,
+  },
+  featuredBallTap: {
+    fontFamily: 'SourceSans3_400Regular',
+    fontSize: 11, color: Colors.cream,
+    textAlign: 'center', marginTop: 6,
+    fontStyle: 'italic',
+    ...READ_SHADOW,
   },
   featuredBallMeaning: {
     fontFamily: 'SourceSans3_400Regular',
-    fontSize: 14, color: Colors.textSecondary,
+    fontSize: 14, color: Colors.cream,
     textAlign: 'center', marginTop: 6, lineHeight: 19,
+    ...READ_SHADOW,
   },
   featuredErrorNote: {
     fontFamily: 'SourceSans3_400Regular',
@@ -1067,10 +1227,10 @@ const styles = StyleSheet.create({
 
   // Daily extras card with premium gating
   extrasCard: {
-    backgroundColor: Colors.surfaceAlt,
     borderRadius: Radius.lg,
-    borderWidth: 1, borderColor: Colors.gold,
-    padding: Spacing.lg,
+    overflow: 'hidden',
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.lg + 4,
     marginBottom: Spacing.lg,
     ...Shadow.card,
   },
@@ -1081,30 +1241,40 @@ const styles = StyleSheet.create({
   extrasLabel: {
     fontFamily: 'SourceSans3_600SemiBold', fontSize: 12, letterSpacing: 2,
     color: Colors.gold,
+    ...READ_SHADOW,
+  },
+  extrasLabelPng: {
+    width: 300, height: 36,
+    alignSelf: 'flex-start',
+  },
+  extrasCoin: {
+    width: 44, height: 44,
   },
   extrasDate: {
     fontFamily: 'SourceSans3_400Regular', fontSize: 14,
-    color: Colors.textMuted, marginTop: 4,
+    color: Colors.cream, marginTop: 4,
+    ...READ_SHADOW,
   },
-  extrasGlyph: { fontFamily: 'Lora_700Bold', fontSize: 30, color: Colors.gold },
   extrasRow: {
     flexDirection: 'row', justifyContent: 'space-between',
     alignItems: 'center', gap: 8,
     paddingVertical: Spacing.sm + 2,
-    borderTopWidth: 1, borderTopColor: Colors.borderLight,
+    borderTopWidth: 1, borderTopColor: 'rgba(244,196,48,0.25)',
   },
   extrasRowObscured: {
     opacity: 0.18,
   },
   extrasRowLabel: {
     fontFamily: 'SourceSans3_600SemiBold', fontSize: 12, letterSpacing: 1.5,
-    color: Colors.textMuted, flexShrink: 1,
+    color: Colors.cream, flexShrink: 1,
+    ...READ_SHADOW,
   },
   extrasRowValue: {
     fontFamily: 'Lora_700Bold', fontSize: 18, fontWeight: '900',
     color: Colors.textPrimary, letterSpacing: -0.2,
     flexShrink: 1, flexGrow: 0,
     textAlign: 'right',
+    ...READ_SHADOW,
   },
   premiumBlock: {
     position: 'relative',
@@ -1143,10 +1313,17 @@ const styles = StyleSheet.create({
   sectionLabel: {
     fontFamily: 'SourceSans3_600SemiBold',
     fontSize: 12, letterSpacing: 2, color: Colors.gold, marginBottom: 4,
+    ...READ_SHADOW,
+  },
+  sectionLabelPng: {
+    width: 300, height: 38,
+    marginBottom: 4,
+    alignSelf: 'flex-start',
   },
   sectionHint: {
     fontFamily: 'SourceSans3_400Regular',
-    fontSize: 14, color: Colors.textMuted, marginBottom: 12,
+    fontSize: 14, color: Colors.cream, marginBottom: 12,
+    ...READ_SHADOW,
   },
 
   intentionGrid: {
@@ -1155,21 +1332,33 @@ const styles = StyleSheet.create({
   // 3 cells per row — 30% width each, gap 8 fits within the 100% scrollContent.
   // Wider cells let the 14pt floor labels render on a single line and keep
   // the grid readable at all three text-size scales.
-  intentionCell: {
+  intentionCellWrap: {
     width: '30%', aspectRatio: 1.05,
-    backgroundColor: Colors.surface, borderRadius: Radius.md,
-    borderWidth: 1, borderColor: Colors.border,
-    alignItems: 'center', justifyContent: 'center', gap: 6,
-    paddingHorizontal: 6,
   },
-  intentionCellActive: { borderColor: Colors.gold, backgroundColor: Colors.surfaceAlt },
-  intentionGlyph: { fontFamily: 'Lora_700Bold', fontSize: 28, color: Colors.textMuted },
+  intentionCell: {
+    flex: 1,
+    borderRadius: Radius.md,
+    overflow: 'hidden',
+    alignItems: 'center', justifyContent: 'center', gap: 0,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
+  intentionGlyph: {
+    fontFamily: 'NotoSerifSC_700Bold', fontSize: 22,
+    lineHeight: 24,
+    color: Colors.cream, textAlign: 'center',
+    marginBottom: 0,
+    ...READ_SHADOW,
+  },
   intentionGlyphActive: { color: Colors.gold },
   intentionLabel: {
-    fontFamily: 'SourceSans3_600SemiBold', fontSize: 12,
-    letterSpacing: 0.3, color: Colors.textMuted, textAlign: 'center',
+    fontFamily: 'SourceSans3_600SemiBold', fontSize: 11,
+    lineHeight: 13,
+    letterSpacing: 0.3, color: Colors.cream, textAlign: 'center',
+    marginTop: 1,
+    ...READ_SHADOW,
   },
-  intentionLabelActive: { color: Colors.textSecondary },
+  intentionLabelActive: { color: Colors.goldHighlight },
 
   countRow: {
     flexDirection: 'row', gap: 10, marginBottom: Spacing.xl, justifyContent: 'center',
@@ -1177,40 +1366,34 @@ const styles = StyleSheet.create({
   },
   countBtn: {
     width: 60, height: 60, borderRadius: 30,
-    backgroundColor: Colors.surface,
-    borderWidth: 1.5, borderColor: Colors.border,
+    overflow: 'hidden',
     alignItems: 'center', justifyContent: 'center',
   },
-  countBtnActive: { borderColor: Colors.gold, backgroundColor: Colors.primary },
-  countLabel: {
-    fontFamily: 'Lora_700Bold', fontSize: 22, color: Colors.textMuted,
-  },
-  countLabelActive: { color: Colors.textPrimary },
+  countBtnActive: {},
 
   cta: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 10, paddingVertical: 22, borderRadius: Radius.lg,
-    backgroundColor: Colors.gold, marginBottom: Spacing.sm, ...Shadow.gold,
+    overflow: 'hidden',
+    marginBottom: Spacing.sm,
   },
-  ctaLocked: {
-    backgroundColor: Colors.surface, shadowOpacity: 0,
-    borderWidth: 1.5, borderColor: Colors.border,
-  },
-  ctaLabel: {
-    fontFamily: 'SourceSans3_600SemiBold',
-    fontSize: 22, fontWeight: '900', letterSpacing: -0.3, color: Colors.background,
-  },
-  ctaLabelLocked: { color: Colors.textMuted },
-  ctaCn: { fontFamily: 'Lora_700Bold', fontSize: 24, color: Colors.background },
+  ctaLocked: {},
+  ctaLabelLocked: {},
   ctaNote: {
     fontFamily: 'SourceSans3_400Regular',
-    fontSize: 12, letterSpacing: 2, color: Colors.textMuted,
+    fontSize: 12, letterSpacing: 2, color: Colors.cream,
     textAlign: 'center', marginBottom: Spacing.lg,
+    ...READ_SHADOW,
   },
 
   historyLink: { alignItems: 'center', paddingVertical: Spacing.sm, marginTop: Spacing.sm },
   historyLinkText: {
     fontFamily: 'SourceSans3_600SemiBold',
-    fontSize: 13, letterSpacing: 2, color: Colors.textSecondary,
+    fontSize: 13, letterSpacing: 2, color: Colors.cream,
+    ...READ_SHADOW,
+  },
+  historyLinkPng: {
+    width: 260, height: 36,
+    alignSelf: 'center',
   },
 });

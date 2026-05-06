@@ -35,7 +35,10 @@ export type AnalyticsEventName =
   | 'paywall_converted'
   | 'paywall_dismissed'
   | 'almanac_visit'
-  | 'almanac_strip_tapped';
+  | 'almanac_strip_tapped'
+  | 'spin_started'
+  | 'spin_landed'
+  | 'reading_saved';
 
 export interface AnalyticsEvent {
   name: AnalyticsEventName;

@@ -66,11 +66,11 @@ export const Strings = {
   },
 
   paywall: {
-    title: 'Unlimited Readings',
-    subtitle: 'Read your blessed numbers every day',
-    freeLimit: 'Free plan: 1 reading per day',
-    feature1: 'Unlimited daily readings',
-    feature2: 'Full per-number explanations',
+    title: '100% Lucky Spins',
+    subtitle: 'Every spin lands on your blessed numbers',
+    freeLimit: 'Free plan: 3 spins per day, ~40% luck per slot',
+    feature1: 'Unlimited daily spins',
+    feature2: 'Every spin = 100% blessed numbers',
     feature3: 'Save all your readings',
     monthly: 'Monthly',
     monthlyPrice: 'S$4.99 / month',
@@ -89,13 +89,13 @@ export const Strings = {
     subtitle: 'What number holds meaning for you?',
     selectType: 'Choose a number type',
     inputLabel: 'Enter your number',
-    cta: 'Reveal My Numbers',
+    cta: 'REVEAL NUMBERS',
     countLabel: 'HOW MANY NUMBERS?',
     intentionLabel: 'YOUR INTENTIONS',
     intentionHint: 'Choose one or more',
-    freeReading: '1 free reading today',
-    noFreeReadings: 'No free readings left today',
-    premiumBadge: 'Unlimited · Premium',
+    freeReading: '3 free spins today',
+    noFreeReadings: 'No free spins left today',
+    premiumBadge: 'Unlimited Spins · 100% Lucky',
     numberTypes: {
       birthdate: 'Birth Date',
       phone: 'Phone Number',
@@ -129,6 +129,21 @@ export const Strings = {
       gentle: 'Today is a Gentle day',
       cta: 'Read more',
     },
+  },
+
+  draw: {
+    eyebrowIdle: 'TAP TO SPIN',
+    eyebrowSpinning: 'SPINNING…',
+    eyebrowLanded: (hits: number, total: number) =>
+      hits === total ? 'ALL BLESSED!' :
+      hits === 0    ? 'NO BLESSED NUMBERS THIS SPIN' :
+                      `${hits} OF ${total} BLESSED ★`,
+    spinCta: 'SPIN',
+    spinAgain: 'SPIN AGAIN',
+    saveAndRead: 'SAVE & READ →',
+    outOfSpinsBanner: 'Out of spins · upgrade for unlimited',
+    spinsLeft: (n: number) => `${n} spin${n === 1 ? '' : 's'} left today`,
+    luckHint: 'Free spins land random ~60% of slots · Premium = 100% blessed',
   },
 
   almanac: {

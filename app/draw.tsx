@@ -1,45 +1,107 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View, StyleSheet, SafeAreaView, TouchableOpacity,
-  Animated, Easing, Vibration, Dimensions,
+  View, StyleSheet, TouchableOpacity, Dimensions,
+  Animated, Easing, Vibration, ImageBackground, Image,
 } from 'react-native';
-import { router, useLocalSearchParams } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { AppText } from '../components/ui/AppText';
-import { NumberBall } from '../components/NumberBall';
+import { EmbossedText } from '../components/ui/EmbossedText';
+import { SlotReel, SlotReelHandle } from '../components/SlotReel';
 import { Colors, Spacing, Radius } from '../constants/theme';
+import { Strings } from '../constants/strings';
 import {
   saveTodayReading, incrementTodayDrawCount,
+  getTodayDrawCount, isPremium,
+  FREE_SPINS_PER_DAY, LUCK_FREE, LUCK_PREMIUM,
 } from '../lib/storage';
+import { applyLuck } from '../lib/numbers';
+import { track } from '../lib/analytics';
+import { preloadSlotSounds, playSound, stopSound, unloadSlotSounds } from '../lib/slotSounds';
 
-const { width: SCREEN_W } = Dimensions.get('window');
+// Slot UI assets ported from MYSTICAL-FOREST-ADVENTURE.
+// bg + logo now match the loading-screen art so the transition reads as
+// continuous (loading flash → main reveal screen). The logo has its
+// solid-white background pre-stripped to a transparent alpha channel
+// (see assets/mfa/logo-transparent.png).
+const SLOT_ASSETS = {
+  bg: require('../assets/mfa/loading-screen/bg.png'),
+  reelFrame: require('../assets/mfa/reelFrame.png'),
+  logo: require('../assets/mfa/logo-transparent.png'),
+  winBg: require('../assets/mfa/win_bg.png'),
+  spinGlyph: require('../assets/ui/spin-btn.png'),
+  woodFrame: require('../assets/ui/wood-frame.png'),
+  // Oriental-casino label PNGs — replace fixed-text RN nodes so they can
+  // never overflow / wrap on small screens.
+  ctaSpin: require('../assets/ui/cta-spin.png'),
+  ctaRespin: require('../assets/ui/cta-respin-misses.png'),
+  ctaSaveRead: require('../assets/ui/cta-save-read.png'),
+  labelReady: require('../assets/ui/label-ready.png'),
+  labelSpinning: require('../assets/ui/label-spinning.png'),
+  labelSpinsLeft: require('../assets/ui/label-spins-left.png'),
+  labelOutOfSpins: require('../assets/ui/label-out-of-spins.png'),
+  labelBlessed: require('../assets/ui/label-blessed.png'),
+  coinFu: require('../assets/ui/coin-fu.png'),
+};
 
-const CHAMBER_SIZE = Math.min(280, SCREEN_W - 80);
-const CHAMBER_RADIUS = CHAMBER_SIZE / 2;
-const BALL_SIZE = 64;
-const SLOT_BALL_SIZE = 52;
+// Reveal screen built on a slot-machine pattern, ported from the
+// MYSTICAL-FOREST-ADVENTURE PIXI prototype. One reel per number; reels
+// spin together and stop one-by-one with a stagger, exactly like the
+// reference (slot-game.js:669-673 staggered start, lines 645-665 staggered
+// stop). Each stop lands on the user's pre-determined number with a small
+// bounce + haptic, and the final landing fires a finale callout + reveals
+// the "Read My Reading" CTA.
 
-// Ghost balls that orbit inside the chamber — purely decorative
-const ORBITS = [
-  { radius: 0.30, speed: 3200, offset: 0.00, size: 32, n: 8,  variant: 'red' as const },
-  { radius: 0.42, speed: 4400, offset: 0.20, size: 28, n: 28, variant: 'gold' as const },
-  { radius: 0.30, speed: 3700, offset: 0.45, size: 30, n: 6,  variant: 'red' as const },
-  { radius: 0.45, speed: 5100, offset: 0.65, size: 26, n: 18, variant: 'red' as const },
-  { radius: 0.36, speed: 4000, offset: 0.85, size: 28, n: 9,  variant: 'gold' as const },
-  { radius: 0.40, speed: 5500, offset: 0.10, size: 24, n: 38, variant: 'red' as const },
-  { radius: 0.34, speed: 3500, offset: 0.55, size: 30, n: 16, variant: 'red' as const },
-  { radius: 0.43, speed: 4700, offset: 0.30, size: 26, n: 26, variant: 'gold' as const },
-  { radius: 0.25, speed: 2900, offset: 0.40, size: 22, n: 88, variant: 'gold' as const },
-  { radius: 0.48, speed: 6000, offset: 0.75, size: 24, n: 36, variant: 'red' as const },
-];
-
-const SPARKLE_COUNT = 10;
-
-// Tunables
 const COUNTDOWN_STEP_MS = 700;
-const PRE_BALL_DELAY = 380;
-const BALL_TICKER_MS = 480;       // number flicker before settling
-const BALL_FLIGHT_MS = 1100;      // chute exit → slot
-const POST_LAND_DELAY = 320;
+const PRE_SPIN_DELAY = 380;
+const STAGGER_MS = 600;            // delay between consecutive reel stops
+// Lengthened so the user sees a clear, satisfying blur cycle before
+// the first reel begins to decelerate. Anything under ~1500ms reads as
+// "the reel snapped to the answer".
+const SPIN_BEFORE_FIRST_STOP = 2200;
+
+// Reels are arranged in TWO rows now so each one can be larger:
+//   5 reels → 3 on top, 2 on bottom
+//   6 reels → 3 on top, 3 on bottom
+// We size by the wider row (3 reels) so both rows match.
+function splitRows(numReels: number): [number, number] {
+  if (numReels <= 3) return [numReels, 0];
+  if (numReels === 5) return [3, 2];
+  if (numReels === 6) return [3, 3];
+  // Generic fallback: ceil/floor split.
+  const top = Math.ceil(numReels / 2);
+  return [top, numReels - top];
+}
+
+// Frame artwork is wider than the cell (lateral dragons) and taller
+// (top/bottom ornament). These factors mirror the constants in SlotReel.tsx.
+const FRAME_W_FACTOR = 1 / 0.56;
+const FRAME_H_FACTOR = 1 / 0.80;
+
+function computeReelSize(numReels: number) {
+  const { width: screenW, height: screenH } = Dimensions.get('window');
+  const [topCount] = splitRows(numReels);
+  const widestRow = Math.max(topCount, 1);
+
+  // ---- Width fit (per row) ----
+  // Each reel's outer frame footprint is SYMBOL_SIZE * FRAME_W_FACTOR wide.
+  // Budget: frame margins (8) + frame side padding (16) + reel gaps (12 per gap).
+  const widthChrome = 8 * 2 + 16 + Math.max(0, widestRow - 1) * 12;
+  const widthAvailable = screenW - widthChrome;
+  const widthFrameOuter = widthAvailable / widestRow;
+  const widthSymbolSize = widthFrameOuter / FRAME_W_FACTOR;
+
+  // ---- Height fit (two rows of 3-row reels with ornate frame) ----
+  const heightAvailable = screenH - 130 - 180 - 32 - 14;
+  // 2 reel rows × outer frame height; outer = SYMBOL_SIZE * 3 * FRAME_H_FACTOR.
+  const heightSymbolSize = heightAvailable / (2 * 3 * FRAME_H_FACTOR);
+
+  const fit = Math.min(widthSymbolSize, heightSymbolSize);
+  // Cell sizing — frame outer ends up at 1.78× this width.
+  // Cap raised to 96 now that the outer wood rack frame is removed and
+  // each reel column has more breathing room.
+  return Math.max(48, Math.min(96, Math.floor(fit)));
+}
 
 export default function DrawScreen() {
   const { numbers: numbersParam, intentions: intentionsParam } = useLocalSearchParams<{
@@ -47,126 +109,174 @@ export default function DrawScreen() {
     intentions: string;
   }>();
 
-  const numbers: number[] = numbersParam ? JSON.parse(numbersParam) : [];
+  // Ideal blessed numbers from the user's profile — the slot machine rolls
+  // around these. With LUCK_FREE the user lands on each ideal slot ~40% of
+  // the time; the rest come up random. Premium passes LUCK_PREMIUM=1.0.
+  const idealNumbers: number[] = numbersParam ? JSON.parse(numbersParam) : [];
   const intentions: string[] = intentionsParam ? JSON.parse(intentionsParam) : [];
 
-  const [revealedCount, setRevealedCount] = useState(0);
-  const [currentBallNumber, setCurrentBallNumber] = useState<number | null>(null);
+  const [premium, setPremium] = useState(false);
+  const [spinsUsedToday, setSpinsUsedToday] = useState(0);
+  // 'intro' is the brief loading flash on screen-mount (home → draw transition).
+  // After it finishes we drop to 'idle' and SPIN can be tapped.
+  const [stage, setStage] = useState<'intro' | 'idle' | 'countdown' | 'spinning' | 'landed'>('intro');
+  const [countdownStep, setCountdownStep] = useState<number | null>(null);
   const [calloutText, setCalloutText] = useState<string | null>(null);
-  const [countdownStep, setCountdownStep] = useState<number | null>(null); // 3, 2, 1, null
-  const [persisted, setPersisted] = useState(false);
-  const allRevealed = revealedCount >= numbers.length;
+  // Latest spin outcome — overwritten each spin. saveTodayReading is called
+  // on every landed spin so the user's most recent result is what /analysis
+  // reads when they tap SAVE & READ.
+  const [result, setResult] = useState<number[]>([]);
+  const [hits, setHits] = useState<boolean[]>([]);
+  // Per-reel landed state. We track this per-index instead of a count so a
+  // partial respin (only miss reels) can put just those reels back into
+  // "spinning" while leaving the hit reels frozen in place.
+  const [landedFlags, setLandedFlags] = useState<boolean[]>([]);
 
-  // ─── Persistent loops ───
-  const chamberSpin = useRef(new Animated.Value(0)).current;
-  const glowPulse = useRef(new Animated.Value(0)).current;
-  const orbitAnims = useRef(ORBITS.map(() => new Animated.Value(0))).current;
+  const reelRefs = useRef<Array<React.RefObject<SlotReelHandle | null>>>(
+    idealNumbers.map(() => React.createRef<SlotReelHandle | null>())
+  );
+  const reelSize = computeReelSize(idealNumbers.length || 1);
 
-  // Chamber shake (during ejection)
-  const chamberShakeX = useRef(new Animated.Value(0)).current;
-  const chamberShakeY = useRef(new Animated.Value(0)).current;
-  const chamberScale = useRef(new Animated.Value(1)).current;
-
-  // Active ball animation
-  const ballProgress = useRef(new Animated.Value(0)).current;
-  const ballScale = useRef(new Animated.Value(0)).current;
-
-  // Per-slot landed state
-  const slotScales = useRef(numbers.map(() => new Animated.Value(0))).current;
-  const slotGlows = useRef(numbers.map(() => new Animated.Value(0))).current;
-
-  // Sparkle burst (one set, repositioned per landing)
-  const sparkleAnims = useRef(
-    Array.from({ length: SPARKLE_COUNT }, () => ({
-      anim: new Animated.Value(0),
-      angle: 0,
-    }))
-  ).current;
-  const [sparkleOrigin, setSparkleOrigin] = useState<{ x: number; y: number } | null>(null);
-
-  // Countdown
   const countdownScale = useRef(new Animated.Value(0)).current;
   const countdownOpacity = useRef(new Animated.Value(0)).current;
-
-  // Callout
   const calloutOpacity = useRef(new Animated.Value(0)).current;
   const calloutScale = useRef(new Animated.Value(0.8)).current;
-
-  // Finale
   const finaleAnim = useRef(new Animated.Value(0)).current;
+  // Idle decoration: continuous coin spin + breathing CTA pulse.
+  const coinSpin = useRef(new Animated.Value(0)).current;
+  const ctaPulse = useRef(new Animated.Value(0)).current;
+  // Screen-mount entry — rack drops in from above + fades in.
+  const rackEntry = useRef(new Animated.Value(0)).current;
+  // Coin-shower finale — N coin sprites burst from the rack centre on a
+  // full-blessed landing. Each coin gets its own AnimatedValueXY so we can
+  // randomise direction/distance.
+  const COIN_COUNT = 14;
+  const coinShower = useRef(
+    Array.from({ length: COIN_COUNT }, () => ({
+      pos: new Animated.ValueXY({ x: 0, y: 0 }),
+      opacity: new Animated.Value(0),
+      rot: new Animated.Value(0),
+    })),
+  ).current;
 
-  // Number ticker on rolling ball
-  const tickerInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const spinsLeft = premium ? Infinity : Math.max(0, FREE_SPINS_PER_DAY - spinsUsedToday);
+  const canSpin = stage === 'idle' && (premium || spinsLeft > 0);
+  const allLanded = landedFlags.length > 0 && landedFlags.every(Boolean);
+  const allRevealed = stage === 'landed' && allLanded;
+  const hitCount = hits.filter(Boolean).length;
+  const missCount = hits.length - hitCount;
+  const canRespinMisses = stage === 'landed' && missCount > 0 && (premium || spinsLeft > 0);
 
-  // Compute slot center positions (relative to slots row container)
-  const slotCount = numbers.length;
-  const slotSpacing = 6;
-  const slotTotalWidth = slotCount * SLOT_BALL_SIZE + (slotCount - 1) * slotSpacing;
-  const slotPositions = numbers.map((_, i) =>
-    -slotTotalWidth / 2 + i * (SLOT_BALL_SIZE + slotSpacing) + SLOT_BALL_SIZE / 2
+  // Fetch spin budget + premium each focus so the count stays in sync if
+  // the user upgrades from the paywall and returns.
+  useFocusEffect(
+    useCallback(() => {
+      (async () => {
+        const [used, prem] = await Promise.all([getTodayDrawCount(), isPremium()]);
+        setSpinsUsedToday(used);
+        setPremium(prem);
+      })();
+    }, [])
   );
 
+  // Preload slot SFX on first focus; unload on unmount.
   useEffect(() => {
-    // Chamber subtle rotation
-    Animated.loop(
-      Animated.timing(chamberSpin, {
-        toValue: 1, duration: 8000, easing: Easing.linear, useNativeDriver: true,
-      })
-    ).start();
-
-    // Glow pulse
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(glowPulse, { toValue: 1, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-        Animated.timing(glowPulse, { toValue: 0, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-      ])
-    ).start();
-
-    // Ghost ball orbits
-    orbitAnims.forEach((anim, i) => {
-      Animated.loop(
-        Animated.timing(anim, {
-          toValue: 1,
-          duration: ORBITS[i].speed,
-          easing: Easing.linear,
-          useNativeDriver: true,
-        })
-      ).start();
-    });
-
-    // Begin: countdown 3 → 2 → 1 → reveal
-    runCountdown();
-
-    return () => {
-      if (tickerInterval.current) clearInterval(tickerInterval.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    void preloadSlotSounds();
+    return () => { void unloadSlotSounds(); };
   }, []);
 
-  // Persist the reading once all balls have landed
+  // Drop the intro stage to idle after a beat so the rack mounts cleanly
+  // a moment after first paint (avoids the heavy Image components blocking
+  // the initial layout pass).
   useEffect(() => {
-    if (allRevealed && !persisted) {
-      setPersisted(true);
-      Vibration.vibrate([0, 60, 80, 60]);
-      // Finale celebration
-      Animated.spring(finaleAnim, {
-        toValue: 1, damping: 8, mass: 1, stiffness: 130,
-        useNativeDriver: true,
-      }).start();
-      (async () => {
-        await incrementTodayDrawCount();
-        await saveTodayReading(numbers, intentions);
-      })();
-    }
-  }, [allRevealed, persisted, numbers, intentions, finaleAnim]);
+    if (stage !== 'intro') return;
+    const t = setTimeout(() => setStage('idle'), 350);
+    return () => clearTimeout(t);
+  }, [stage]);
 
-  function runCountdown() {
+  // Idle animations — coin spinning forever (5.4s/rev), CTA breathing 1.0↔1.04.
+  useEffect(() => {
+    const coin = Animated.loop(
+      Animated.timing(coinSpin, {
+        toValue: 1, duration: 5400,
+        easing: Easing.linear, useNativeDriver: true,
+      }),
+    );
+    coin.start();
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(ctaPulse, {
+          toValue: 1, duration: 900,
+          easing: Easing.inOut(Easing.ease), useNativeDriver: true,
+        }),
+        Animated.timing(ctaPulse, {
+          toValue: 0, duration: 900,
+          easing: Easing.inOut(Easing.ease), useNativeDriver: true,
+        }),
+      ]),
+    );
+    pulse.start();
+    return () => {
+      coin.stop();
+      pulse.stop();
+    };
+  }, [coinSpin, ctaPulse]);
+
+  // Rack entry — runs once after the loading flash finishes ('intro' → 'idle').
+  useEffect(() => {
+    if (stage !== 'idle') return;
+    Animated.spring(rackEntry, {
+      toValue: 1,
+      damping: 11, mass: 1.1, stiffness: 110,
+      useNativeDriver: true,
+    }).start();
+  }, [stage, rackEntry]);
+
+  // Coin shower — fired when the finale lands on an all-blessed result.
+  // Pre-randomised trajectories so each coin flies a different angle/length.
+  function runCoinShower() {
+    const animations = coinShower.map(coin => {
+      const angle = Math.random() * Math.PI * 2;
+      const distance = 140 + Math.random() * 120;
+      const dx = Math.cos(angle) * distance;
+      const dy = Math.sin(angle) * distance + 80; // bias downward (gravity)
+      coin.pos.setValue({ x: 0, y: 0 });
+      coin.opacity.setValue(0);
+      coin.rot.setValue(0);
+      return Animated.parallel([
+        Animated.sequence([
+          Animated.timing(coin.opacity, {
+            toValue: 1, duration: 80, useNativeDriver: true,
+          }),
+          Animated.delay(700),
+          Animated.timing(coin.opacity, {
+            toValue: 0, duration: 320, useNativeDriver: true,
+          }),
+        ]),
+        Animated.timing(coin.pos, {
+          toValue: { x: dx, y: dy },
+          duration: 1100,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(coin.rot, {
+          toValue: Math.random() > 0.5 ? 2 : -2,
+          duration: 1100,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]);
+    });
+    Animated.stagger(50, animations).start();
+  }
+
+  function runCountdown(onDone: () => void) {
     const steps = [3, 2, 1];
     let i = 0;
     const showStep = () => {
       if (i >= steps.length) {
         setCountdownStep(null);
-        runRevealSequence();
+        onDone();
         return;
       }
       setCountdownStep(steps[i]);
@@ -183,7 +293,6 @@ export default function DrawScreen() {
           useNativeDriver: true,
         }),
       ]).start();
-      // Hold + fade
       setTimeout(() => {
         Animated.timing(countdownOpacity, {
           toValue: 0, duration: 220, useNativeDriver: true,
@@ -193,59 +302,6 @@ export default function DrawScreen() {
       setTimeout(showStep, COUNTDOWN_STEP_MS);
     };
     setTimeout(showStep, 380);
-  }
-
-  function shakeChamber() {
-    chamberShakeX.setValue(0);
-    chamberShakeY.setValue(0);
-    Animated.sequence([
-      Animated.timing(chamberShakeX, { toValue: -6, duration: 50, useNativeDriver: true }),
-      Animated.timing(chamberShakeX, { toValue: 7,  duration: 60, useNativeDriver: true }),
-      Animated.timing(chamberShakeX, { toValue: -5, duration: 50, useNativeDriver: true }),
-      Animated.timing(chamberShakeX, { toValue: 4,  duration: 50, useNativeDriver: true }),
-      Animated.timing(chamberShakeX, { toValue: 0,  duration: 60, useNativeDriver: true }),
-    ]).start();
-    Animated.sequence([
-      Animated.timing(chamberShakeY, { toValue: 4, duration: 60, useNativeDriver: true }),
-      Animated.timing(chamberShakeY, { toValue: -3, duration: 50, useNativeDriver: true }),
-      Animated.timing(chamberShakeY, { toValue: 2, duration: 60, useNativeDriver: true }),
-      Animated.timing(chamberShakeY, { toValue: 0, duration: 60, useNativeDriver: true }),
-    ]).start();
-    Animated.sequence([
-      Animated.timing(chamberScale, { toValue: 1.05, duration: 80, useNativeDriver: true }),
-      Animated.timing(chamberScale, { toValue: 1.0,  duration: 140, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-    ]).start();
-  }
-
-  function startNumberTicker(finalNumber: number) {
-    if (tickerInterval.current) clearInterval(tickerInterval.current);
-    const id = setInterval(() => {
-      setCurrentBallNumber(Math.floor(Math.random() * 49) + 1);
-    }, 55);
-    tickerInterval.current = id;
-    setTimeout(() => {
-      if (tickerInterval.current === id) {
-        clearInterval(id);
-        tickerInterval.current = null;
-        setCurrentBallNumber(finalNumber);
-      }
-    }, BALL_TICKER_MS);
-  }
-
-  function fireSparkles(slotIndex: number) {
-    const x = slotPositions[slotIndex];
-    const y = CHAMBER_RADIUS + 150;
-    setSparkleOrigin({ x, y });
-    sparkleAnims.forEach((s, i) => {
-      s.angle = (i / SPARKLE_COUNT) * Math.PI * 2 + Math.random() * 0.4;
-      s.anim.setValue(0);
-      Animated.timing(s.anim, {
-        toValue: 1,
-        duration: 600 + Math.random() * 200,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }).start();
-    });
   }
 
   function showCallout(text: string) {
@@ -268,560 +324,548 @@ export default function DrawScreen() {
     }, 950);
   }
 
-  function runRevealSequence() {
-    let i = 0;
-    const dropOne = () => {
-      if (i >= numbers.length) return;
-      const idx = i;
-
-      // Pre-eject suspense — chamber rumbles
-      shakeChamber();
-      Vibration.vibrate(25);
-
-      ballProgress.setValue(0);
-      ballScale.setValue(0);
-      startNumberTicker(numbers[idx]);
-
-      // Ball appears
-      Animated.timing(ballScale, {
-        toValue: 1, duration: 200,
-        easing: Easing.out(Easing.back(1.7)),
-        useNativeDriver: true,
-      }).start();
-
-      // Travel
-      Animated.timing(ballProgress, {
-        toValue: 1, duration: BALL_FLIGHT_MS,
-        easing: Easing.bezier(0.4, 0.05, 0.55, 0.95),
-        useNativeDriver: true,
-      }).start(() => {
-        // Land
-        Vibration.vibrate(40);
-        Animated.parallel([
-          Animated.spring(slotScales[idx], {
-            toValue: 1, damping: 6, mass: 0.7, stiffness: 230,
-            useNativeDriver: true,
-          }),
-          Animated.sequence([
-            Animated.timing(slotGlows[idx], {
-              toValue: 1, duration: 180, useNativeDriver: true,
-            }),
-            Animated.timing(slotGlows[idx], {
-              toValue: 0, duration: 700, useNativeDriver: true,
-            }),
-          ]),
-        ]).start();
-
-        fireSparkles(idx);
-        showCallout(`Number ${numbers[idx]}`);
-        setRevealedCount(c => c + 1);
-
-        Animated.timing(ballScale, {
-          toValue: 0, duration: 140, useNativeDriver: true,
-        }).start();
-
-        i++;
-        if (i < numbers.length) {
-          setTimeout(dropOne, POST_LAND_DELAY);
-        } else {
-          setCurrentBallNumber(null);
-        }
-      });
-    };
-
-    setTimeout(dropOne, PRE_BALL_DELAY);
+  function handleSpin() {
+    if (!canSpin) {
+      if (!premium && spinsLeft <= 0) {
+        track('paywall_reached', { source: 'draw_out_of_spins' });
+        router.push('/paywall');
+      }
+      return;
+    }
+    // Roll the slot outcome BEFORE spinning so each reel knows where to land.
+    const rolled = applyLuck(idealNumbers, premium ? LUCK_PREMIUM : LUCK_FREE);
+    setResult(rolled.numbers);
+    setHits(rolled.hits);
+    setLandedFlags(idealNumbers.map(() => false));
+    finaleAnim.setValue(0);
+    void playSound('button');
+    track('spin_started', {
+      premium, hitsExpected: idealNumbers.length,
+      spinsLeftBefore: spinsLeft === Infinity ? -1 : spinsLeft,
+    });
+    // Loading flash already played on screen entry — go straight to the
+    // 3-2-1 countdown.
+    startCountdownAndSpin(rolled);
   }
 
-  // ─── Active ball trajectory ───
-  const activeSlotIdx = Math.max(0, Math.min(revealedCount, numbers.length - 1));
-  const targetX = slotPositions[activeSlotIdx] ?? 0;
+  // Sequence reel stops with stagger. `indices` is the ordered list of reel
+  // positions to stop (initial spin = all; respin = misses only). For each
+  // landing we update landedFlags[i], play the stop sound, fire a callout,
+  // and on the last landing run the finale + persist the new result.
+  function runStopSequence(rolled: { numbers: number[]; hits: boolean[] }, indices: number[]) {
+    if (indices.length === 0) {
+      setStage('landed');
+      return;
+    }
+    const stopAt = (k: number) => {
+      if (k >= indices.length) return;
+      const i = indices[k];
+      const ref = reelRefs.current[i];
+      ref.current?.stop(rolled.numbers[i]).then(() => {
+        void playSound('reelStop');
+        showCallout(rolled.hits[i] ? `★ ${rolled.numbers[i]}` : `${rolled.numbers[i]}`);
+        setLandedFlags(prev => {
+          const next = [...prev];
+          next[i] = true;
+          return next;
+        });
+        const isLast = k === indices.length - 1;
+        if (isLast) {
+          void stopSound('reelsSpin');
+          const allHits = rolled.hits.every(Boolean);
+          void playSound(allHits ? 'win' : 'bonusLand');
+          Vibration.vibrate([0, 60, 80, 60]);
+          Animated.spring(finaleAnim, {
+            toValue: 1, damping: 8, mass: 1, stiffness: 130,
+            useNativeDriver: true,
+          }).start();
+          if (allHits) runCoinShower();
+          setStage('landed');
+          (async () => {
+            await incrementTodayDrawCount();
+            await saveTodayReading(rolled.numbers, intentions);
+            setSpinsUsedToday(s => s + 1);
+            track('spin_landed', {
+              hits: rolled.hits.filter(Boolean).length,
+              total: rolled.numbers.length,
+              premium,
+            });
+          })();
+        }
+      });
+      setTimeout(() => stopAt(k + 1), STAGGER_MS);
+    };
+    stopAt(0);
+  }
 
-  const chuteExitX = CHAMBER_RADIUS * 0.7;
-  const chuteExitY = CHAMBER_RADIUS * 0.85;
+  function startCountdownAndSpin(rolled: { numbers: number[]; hits: boolean[] }) {
+    setStage('countdown');
 
-  const ballTranslateX = ballProgress.interpolate({
-    inputRange: [0, 0.35, 0.7, 1],
-    outputRange: [
-      chuteExitX,
-      chuteExitX + 30,
-      (chuteExitX + targetX) * 0.5 + 20,
-      targetX,
-    ],
-  });
+    runCountdown(() => {
+      setStage('spinning');
+      const allIndices = rolled.numbers.map((_, i) => i);
+      setTimeout(() => {
+        allIndices.forEach(i => reelRefs.current[i].current?.spin());
+        void playSound('reelsSpin', { loop: true });
+      }, PRE_SPIN_DELAY);
+      setTimeout(() => {
+        runStopSequence(rolled, allIndices);
+      }, PRE_SPIN_DELAY + SPIN_BEFORE_FIRST_STOP);
+    });
+  }
 
-  const ballTranslateY = ballProgress.interpolate({
-    inputRange: [0, 0.25, 0.55, 0.85, 1],
-    outputRange: [
-      chuteExitY,
-      chuteExitY + 40,
-      CHAMBER_RADIUS + 70,
-      CHAMBER_RADIUS + 130,
-      CHAMBER_RADIUS + 150,
-    ],
-  });
+  // Respin only the reels that didn't land on the user's blessed number.
+  // Hit reels stay frozen in place — we don't call spin/stop on them. The
+  // user is gambling specifically on the misses landing better this round,
+  // so we don't redo the loading flash + 3-2-1 countdown either; respins
+  // are quick & focused.
+  function handleRespinMisses() {
+    if (!canRespinMisses) {
+      if (!premium && spinsLeft <= 0) {
+        track('paywall_reached', { source: 'draw_spin_again' });
+        router.push('/paywall');
+      }
+      return;
+    }
+    const missIndices = hits.map((h, i) => h ? -1 : i).filter(i => i >= 0);
+    if (missIndices.length === 0) return;
 
-  const ballRotate = ballProgress.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['0deg', '900deg'],
-  });
+    // Fresh roll across all positions, but we only adopt the values at
+    // miss indices. Hit indices keep their previous value/hit state.
+    const reroll = applyLuck(idealNumbers, premium ? LUCK_PREMIUM : LUCK_FREE);
+    const newResult = result.map((v, i) => hits[i] ? v : reroll.numbers[i]);
+    const newHits = hits.map((h, i) => h ? h : reroll.hits[i]);
 
-  const chamberRotation = chamberSpin.interpolate({
-    inputRange: [0, 1], outputRange: ['0deg', '360deg'],
-  });
-  const glowScale = glowPulse.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1.10] });
-  const glowOpacity = glowPulse.interpolate({ inputRange: [0, 1], outputRange: [0.45, 0.90] });
-  const chuteGlowOpacity = ballScale.interpolate({ inputRange: [0, 1], outputRange: [0.2, 1] });
+    setResult(newResult);
+    setHits(newHits);
+    setLandedFlags(prev => prev.map((flag, i) => hits[i] ? flag : false));
+    finaleAnim.setValue(0);
+    void playSound('button');
+    setStage('spinning');
+    track('spin_started', {
+      premium, hitsExpected: missIndices.length,
+      spinsLeftBefore: spinsLeft === Infinity ? -1 : spinsLeft,
+    });
+
+    setTimeout(() => {
+      missIndices.forEach(i => reelRefs.current[i].current?.spin());
+      void playSound('reelsSpin', { loop: true });
+    }, 120);
+    setTimeout(() => {
+      runStopSequence({ numbers: newResult, hits: newHits }, missIndices);
+    }, 120 + SPIN_BEFORE_FIRST_STOP);
+  }
+
+  function handleSaveAndRead() {
+    track('reading_saved', { hits: hitCount, total: result.length, premium });
+    router.replace({
+      pathname: '/analysis',
+      params: {
+        numbers: JSON.stringify(result),
+        intentions: intentionsParam ?? '[]',
+      },
+    });
+  }
+
+  const [topCount, bottomCount] = splitRows(idealNumbers.length || 1);
+  const renderReel = (i: number) => {
+    const landed = !!landedFlags[i];
+    const isHit = landed && hits[i];
+    // Idle reels display the user's blessed number for that slot so the
+    // grid is meaningful even before they tap SPIN.
+    const idealForSlot = idealNumbers[i] ?? 1;
+    return (
+      <View key={i} style={styles.reelColumn}>
+        <SlotReel
+          ref={reelRefs.current[i]}
+          initialTarget={idealForSlot}
+          size={reelSize}
+        />
+        <View style={[
+          styles.reelDot,
+          landed && (isHit ? styles.reelDotHit : styles.reelDotMiss),
+        ]} />
+      </View>
+    );
+  };
 
   return (
-    <View style={styles.root}>
+    <ImageBackground source={SLOT_ASSETS.bg} style={styles.root} resizeMode="cover">
       <SafeAreaView style={styles.safe}>
-        {/* Header */}
+        {/* Minimal header — just the spins-left chip. */}
         <View style={styles.header}>
-          <AppText style={styles.eyebrow}>
-            {allRevealed ? 'Your numbers are ready' : 'Drawing your numbers'}
-          </AppText>
-          <AppText variant="heading" style={styles.title}>Your Blessed Numbers</AppText>
-          <AppText style={styles.subtitle}>福 星 顯 現</AppText>
-        </View>
-
-        {/* Stage */}
-        <View style={styles.stage}>
-          {/* Chamber */}
-          <Animated.View
-            style={[
-              styles.chamberWrap,
-              {
-                transform: [
-                  { translateX: chamberShakeX },
-                  { translateY: chamberShakeY },
-                  { scale: chamberScale },
-                ],
-              },
-            ]}
-          >
-            {/* Outer pulsing glow */}
-            <Animated.View
-              pointerEvents="none"
-              style={[
-                styles.glow,
-                {
-                  opacity: glowOpacity,
-                  transform: [{ scale: glowScale }],
-                },
-              ]}
+          <View style={styles.spinsTagWrap}>
+            <Image
+              source={SLOT_ASSETS.labelSpinsLeft}
+              style={styles.spinsTagBg}
+              resizeMode="contain"
             />
-
-            {/* Chamber sphere */}
-            <Animated.View
-              style={[
-                styles.chamber,
-                { transform: [{ rotate: chamberRotation }] },
-              ]}
-            >
-              <View style={[styles.chamberRing, { borderColor: Colors.gold, opacity: 0.35 }]} />
-              <View style={[styles.chamberRing, styles.chamberRingInner]} />
-
-              {ORBITS.map((orbit, i) => {
-                const t = orbitAnims[i];
-                const startDeg = orbit.offset * 360;
-                const angle = t.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [`${startDeg}deg`, `${startDeg + 360}deg`],
-                });
-                const counterAngle = t.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [`${-startDeg}deg`, `${-(startDeg + 360)}deg`],
-                });
-                const r = orbit.radius * CHAMBER_RADIUS;
-                return (
-                  <Animated.View
-                    key={i}
-                    pointerEvents="none"
-                    style={[
-                      styles.orbitWrap,
-                      {
-                        transform: [
-                          { rotate: angle },
-                          { translateY: -r },
-                          { rotate: counterAngle },
-                        ],
-                      },
-                    ]}
-                  >
-                    <NumberBall
-                      number={orbit.n}
-                      size={orbit.size}
-                      variant={orbit.variant}
-                    />
-                  </Animated.View>
-                );
-              })}
-            </Animated.View>
-
-            {/* Glass sheen */}
-            <View style={styles.glassSheen} pointerEvents="none" />
-            <View style={styles.glassHighlight} pointerEvents="none" />
-
-            {/* Brand cap */}
-            <View style={styles.cap} pointerEvents="none">
-              <AppText style={styles.capText}>福</AppText>
-            </View>
-
-            {/* Chute */}
-            <View style={styles.chuteWrap} pointerEvents="none">
-              <Animated.View style={[styles.chuteHole, { opacity: chuteGlowOpacity }]} />
-            </View>
-
-            {/* Active rolling ball */}
-            {currentBallNumber !== null && (
-              <Animated.View
-                pointerEvents="none"
-                style={[
-                  styles.activeBall,
-                  {
-                    transform: [
-                      { translateX: ballTranslateX },
-                      { translateY: ballTranslateY },
-                      { rotate: ballRotate },
-                      { scale: ballScale },
-                    ],
-                  },
-                ]}
-              >
-                <NumberBall number={currentBallNumber} size={BALL_SIZE} variant="red" />
-              </Animated.View>
+            {!premium && (
+              <AppText style={styles.spinsTagCount}>
+                {spinsLeft === Infinity ? '∞' : String(spinsLeft)}
+              </AppText>
             )}
-
-            {/* Sparkle burst — anchored to last landing slot */}
-            {sparkleOrigin && (
-              <View
-                pointerEvents="none"
-                style={[
-                  styles.sparkleAnchor,
-                  {
-                    left: CHAMBER_RADIUS + sparkleOrigin.x,
-                    top: sparkleOrigin.y,
-                  },
-                ]}
-              >
-                {sparkleAnims.map((s, i) => {
-                  const distance = 40 + (i % 3) * 10;
-                  const dx = Math.cos(s.angle) * distance;
-                  const dy = Math.sin(s.angle) * distance;
-                  return (
-                    <Animated.View
-                      key={i}
-                      style={[
-                        styles.sparkle,
-                        {
-                          opacity: s.anim.interpolate({
-                            inputRange: [0, 0.2, 1], outputRange: [0, 1, 0],
-                          }),
-                          transform: [
-                            { translateX: s.anim.interpolate({ inputRange: [0, 1], outputRange: [0, dx] }) },
-                            { translateY: s.anim.interpolate({ inputRange: [0, 1], outputRange: [0, dy] }) },
-                            { scale: s.anim.interpolate({ inputRange: [0, 0.4, 1], outputRange: [0, 1, 0.3] }) },
-                          ],
-                        },
-                      ]}
-                    />
-                  );
-                })}
-              </View>
-            )}
-
-            {/* Countdown overlay */}
-            {countdownStep !== null && (
-              <Animated.View
-                pointerEvents="none"
-                style={[
-                  styles.countdownOverlay,
-                  {
-                    opacity: countdownOpacity,
-                    transform: [{ scale: countdownScale }],
-                  },
-                ]}
-              >
-                <AppText style={styles.countdownText}>{countdownStep}</AppText>
-              </Animated.View>
-            )}
-          </Animated.View>
-
-          {/* Callout banner */}
-          {calloutText && (
-            <Animated.View
-              pointerEvents="none"
-              style={[
-                styles.callout,
-                {
-                  opacity: calloutOpacity,
-                  transform: [{ scale: calloutScale }],
-                },
-              ]}
-            >
-              <AppText style={styles.calloutText}>{calloutText}</AppText>
-            </Animated.View>
-          )}
-
-          {/* Slots row */}
-          <View style={styles.slotsRow}>
-            {numbers.map((n, i) => {
-              const landed = i < revealedCount;
-              return (
-                <View key={i} style={styles.slot}>
-                  {!landed && <View style={styles.slotRing} />}
-
-                  {landed && (
-                    <Animated.View
-                      style={{
-                        transform: [
-                          { scale: slotScales[i].interpolate({
-                              inputRange: [0, 1], outputRange: [0.5, 1],
-                            }),
-                          },
-                        ],
-                      }}
-                    >
-                      <NumberBall number={n} size={SLOT_BALL_SIZE} variant="red" />
-                    </Animated.View>
-                  )}
-
-                  {landed && (
-                    <Animated.View
-                      pointerEvents="none"
-                      style={[
-                        styles.slotGlow,
-                        {
-                          opacity: slotGlows[i],
-                          transform: [{
-                            scale: slotGlows[i].interpolate({
-                              inputRange: [0, 1], outputRange: [1, 1.7],
-                            }),
-                          }],
-                        },
-                      ]}
-                    />
-                  )}
-
-                  <AppText style={styles.slotIdx}>#{String(i + 1).padStart(2, '0')}</AppText>
-                </View>
-              );
-            })}
           </View>
         </View>
 
-        {/* Footer */}
-        <View style={styles.footer}>
-          {!allRevealed ? (
-            <AppText style={styles.progress}>
-              {revealedCount} of {numbers.length} so far
-            </AppText>
-          ) : (
-            <Animated.View
-              style={{
-                opacity: finaleAnim,
-                transform: [{ scale: finaleAnim.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] }) }],
-              }}
+        {/* Reel rack — wrapped in the ornate wood reelFrame from MFA. Reels
+            are split across TWO rows so each can be larger:
+              5 reels → 3 / 2,  6 reels → 3 / 3.
+            win_bg.png radiates behind the rack when all numbers are blessed. */}
+        <View style={styles.reelStage}>
+          {allRevealed && hits.every(Boolean) && (
+            <Animated.Image
+              source={SLOT_ASSETS.winBg}
+              style={[
+                styles.winHalo,
+                {
+                  opacity: finaleAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 0.85] }),
+                  transform: [{ scale: finaleAnim.interpolate({ inputRange: [0, 1], outputRange: [0.7, 1.05] }) }],
+                },
+              ]}
+              resizeMode="contain"
+            />
+          )}
+          {/* Defer mounting reels until after the loading flash so the
+              heavy 28×N Image components don't block first paint. */}
+          {stage !== 'intro' && (
+            <Animated.View style={{
+              opacity: rackEntry,
+              transform: [
+                { translateY: rackEntry.interpolate({ inputRange: [0, 1], outputRange: [-60, 0] }) },
+                { scale: rackEntry.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1] }) },
+              ],
+            }}>
+            <ImageBackground
+              source={SLOT_ASSETS.reelFrame}
+              style={styles.reelRackFrame}
+              imageStyle={styles.reelRackFrameImage}
+              resizeMode="stretch"
             >
-              <AppText style={styles.finaleText}>All ready ★</AppText>
+              <View style={styles.reelRack}>
+                <View style={styles.reelRow}>
+                  {Array.from({ length: topCount }, (_, i) => renderReel(i))}
+                </View>
+                {bottomCount > 0 && (
+                  <View style={styles.reelRow}>
+                    {Array.from({ length: bottomCount }, (_, j) => renderReel(topCount + j))}
+                  </View>
+                )}
+              </View>
+            </ImageBackground>
             </Animated.View>
           )}
 
-          <TouchableOpacity
-            style={[styles.cta, !allRevealed && styles.ctaWaiting]}
-            onPress={() => router.replace({
-              pathname: '/analysis',
-              params: { numbers: JSON.stringify(numbers), intentions: intentionsParam ?? '[]' },
-            })}
-            disabled={!allRevealed}
-            activeOpacity={0.85}
-            accessibilityRole="button"
+          {/* Coin shower — bursts from rack centre on full-blessed finale. */}
+          {coinShower.map((coin, i) => (
+            <Animated.View
+              key={`coin-${i}`}
+              pointerEvents="none"
+              style={[styles.coinParticle, {
+                opacity: coin.opacity,
+                transform: [
+                  { translateX: coin.pos.x },
+                  { translateY: coin.pos.y },
+                  { rotate: coin.rot.interpolate({
+                      inputRange: [-2, 2], outputRange: ['-720deg', '720deg'],
+                    }) },
+                ],
+              }]}
+            >
+              <Image source={SLOT_ASSETS.coinFu} style={styles.coinParticleImg} resizeMode="contain" />
+            </Animated.View>
+          ))}
+        </View>
+
+        {/* Intro stage exists only to defer the heavy reel-rack mount.
+            The home screen already shows the LoadingFlash during navigation,
+            so we don't render another flash here — just a short timer to
+            transition to 'idle'. */}
+
+        {/* Countdown overlay */}
+        {countdownStep !== null && (
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.countdownOverlay,
+              {
+                opacity: countdownOpacity,
+                transform: [{ scale: countdownScale }],
+              },
+            ]}
           >
-            <AppText style={[styles.ctaLabel, !allRevealed && styles.ctaLabelWaiting]}>
-              {allRevealed ? 'Read My Reading →' : 'Please wait…'}
-            </AppText>
-          </TouchableOpacity>
+            <AppText style={styles.countdownText}>{countdownStep}</AppText>
+          </Animated.View>
+        )}
+
+        {/* Callout banner */}
+        {calloutText && (
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.callout,
+              {
+                opacity: calloutOpacity,
+                transform: [{ scale: calloutScale }],
+              },
+            ]}
+          >
+            <AppText style={styles.calloutText}>{calloutText}</AppText>
+          </Animated.View>
+        )}
+
+        {/* Footer — wood ticker bar shows live state. Beneath it: the
+            primary action button rotates between SPIN / SPIN AGAIN / SAVE &
+            READ depending on stage. Mirrors the bottomFrame layout from
+            MFA's createReels(). */}
+        <View style={styles.footer}>
+          <View style={styles.tickerStage}>
+            {stage === 'spinning' || stage === 'countdown' ? (
+              <View style={styles.tickerStateRow}>
+                <Image source={SLOT_ASSETS.labelSpinning} style={styles.tickerLabel} resizeMode="contain" />
+                <AppText style={styles.progress}>
+                  {landedFlags.filter(Boolean).length} / {idealNumbers.length}
+                </AppText>
+              </View>
+            ) : stage === 'landed' ? (
+              <Animated.View
+                style={[styles.tickerStateRow, {
+                  opacity: finaleAnim,
+                  transform: [{ scale: finaleAnim.interpolate({ inputRange: [0, 1], outputRange: [0.85, 1] }) }],
+                }]}
+              >
+                <AppText style={styles.finaleText}>
+                  {hitCount} / {result.length}
+                </AppText>
+                <Image source={SLOT_ASSETS.labelBlessed} style={styles.tickerLabel} resizeMode="contain" />
+              </Animated.View>
+            ) : (
+              <Image source={SLOT_ASSETS.labelReady} style={styles.tickerLabel} resizeMode="contain" />
+            )}
+          </View>
+
+          {/* Primary action — varies by stage. Buttons are now PNGs so the
+              ornate gold typography never wraps or overflows. */}
+          {stage === 'idle' ? (
+            <Animated.View style={{
+              transform: [{ scale: ctaPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.04] }) }],
+            }}>
+              <TouchableOpacity
+                onPress={handleSpin}
+                disabled={!canSpin}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                style={styles.imageCtaWrap}
+              >
+                <Image
+                  source={canSpin ? SLOT_ASSETS.ctaSpin : SLOT_ASSETS.labelOutOfSpins}
+                  style={styles.imageCta}
+                  resizeMode="contain"
+                />
+              </TouchableOpacity>
+            </Animated.View>
+          ) : allRevealed ? (
+            <View style={styles.landedActions}>
+              {missCount > 0 && (premium || spinsLeft > 0) && (
+                <TouchableOpacity
+                  onPress={handleRespinMisses}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  style={styles.imageCtaWrap}
+                >
+                  <View>
+                    <Image
+                      source={SLOT_ASSETS.ctaRespin}
+                      style={styles.imageCta}
+                      resizeMode="contain"
+                    />
+                    <View pointerEvents="none" style={styles.respinCountChip}>
+                      <AppText style={styles.respinCountText}>{missCount}</AppText>
+                    </View>
+                  </View>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                onPress={handleSaveAndRead}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                style={styles.imageCtaWrap}
+              >
+                <Image
+                  source={SLOT_ASSETS.ctaSaveRead}
+                  style={styles.imageCta}
+                  resizeMode="contain"
+                />
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={[styles.imageCtaWrap, { opacity: 0.55 }]}>
+              <Image
+                source={SLOT_ASSETS.labelSpinning}
+                style={styles.imageCta}
+                resizeMode="contain"
+              />
+            </View>
+          )}
+
           <AppText style={styles.disclaimer}>
-            For cultural reflection only — not a prediction or financial guide.
+            {premium ? 'Every spin lands on your blessed numbers' : Strings.draw.luckHint}
           </AppText>
         </View>
       </SafeAreaView>
-    </View>
+    </ImageBackground>
   );
 }
 
+const READ_SHADOW = {
+  textShadowColor: 'rgba(0,0,0,0.85)',
+  textShadowOffset: { width: 0, height: 1.5 },
+  textShadowRadius: 4,
+} as const;
+
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
-  safe: { flex: 1 },
+  safe: { flex: 1, justifyContent: 'space-between' },
 
   header: {
-    paddingHorizontal: Spacing.xl,
-    paddingTop: Spacing.lg,
-    paddingBottom: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.xs,
+    paddingBottom: 0,
     alignItems: 'center',
   },
-  eyebrow: {
-    fontFamily: 'SourceSans3_600SemiBold',
-    fontSize: 10, letterSpacing: 3, color: Colors.gold, marginBottom: 4,
+  logo: {
+    width: 200,
+    height: 56,
+    marginBottom: 0,
   },
-  title: {
-    color: Colors.textPrimary, textAlign: 'center', marginBottom: 4,
-  },
-  subtitle: {
-    fontFamily: 'Lora_600SemiBold',
-    fontSize: 16, letterSpacing: 6, color: Colors.gold,
-  },
-
-  stage: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: Spacing.lg,
-    position: 'relative',
-  },
-
-  chamberWrap: {
-    width: CHAMBER_SIZE,
-    height: CHAMBER_SIZE,
+  // SPINS LEFT TODAY label PNG with a small numeric overlay on top.
+  spinsTagWrap: {
+    width: 240,
+    height: 44,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
+    marginTop: 2,
   },
-  glow: {
+  spinsTagBg: {
+    width: '100%',
+    height: '100%',
+  },
+  spinsTagCount: {
     position: 'absolute',
-    width: CHAMBER_SIZE * 1.30,
-    height: CHAMBER_SIZE * 1.30,
-    borderRadius: (CHAMBER_SIZE * 1.30) / 2,
-    backgroundColor: Colors.primary,
+    right: 26,
+    top: 12,
+    fontFamily: 'Cinzel_800ExtraBold',
+    fontSize: 18, color: '#FFE082',
+    textShadowColor: 'rgba(0,0,0,0.7)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
-  chamber: {
-    width: CHAMBER_SIZE,
-    height: CHAMBER_SIZE,
-    borderRadius: CHAMBER_SIZE / 2,
-    backgroundColor: '#1A1018',
-    borderWidth: 3,
-    borderColor: Colors.gold,
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
-    shadowColor: Colors.gold,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.6,
-    shadowRadius: 28,
-    elevation: 14,
-  },
-  chamberRing: {
+  // Spinning fu coin — sits to the upper-right above the rack.
+  coinFloat: {
     position: 'absolute',
-    width: CHAMBER_SIZE - 16,
-    height: CHAMBER_SIZE - 16,
-    borderRadius: (CHAMBER_SIZE - 16) / 2,
-    borderWidth: 1,
+    top: 60, right: 18,
+    width: 56, height: 56,
+    zIndex: 5,
   },
-  chamberRingInner: {
-    width: CHAMBER_SIZE - 60,
-    height: CHAMBER_SIZE - 60,
-    borderRadius: (CHAMBER_SIZE - 60) / 2,
-    borderColor: Colors.primary,
-    opacity: 0.25,
-    borderStyle: 'dashed',
+  coin: {
+    width: '100%', height: '100%',
   },
-  orbitWrap: {
+  // Coin-shower particle — fired on full-blessed finale.
+  coinParticle: {
     position: 'absolute',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  glassSheen: {
-    position: 'absolute',
-    top: CHAMBER_SIZE * 0.08,
-    left: CHAMBER_SIZE * 0.18,
-    width: CHAMBER_SIZE * 0.32,
-    height: CHAMBER_SIZE * 0.18,
-    borderRadius: CHAMBER_SIZE * 0.16,
-    backgroundColor: 'rgba(255,255,255,0.10)',
-    transform: [{ rotate: '-22deg' }],
-  },
-  glassHighlight: {
-    position: 'absolute',
-    top: CHAMBER_SIZE * 0.18,
-    left: CHAMBER_SIZE * 0.22,
-    width: CHAMBER_SIZE * 0.10,
-    height: CHAMBER_SIZE * 0.06,
-    borderRadius: CHAMBER_SIZE * 0.05,
-    backgroundColor: 'rgba(255,255,255,0.22)',
-    transform: [{ rotate: '-22deg' }],
-  },
-  cap: {
-    position: 'absolute',
-    top: -22,
-    width: 48, height: 48, borderRadius: 24,
-    backgroundColor: Colors.primary,
-    borderWidth: 2, borderColor: Colors.gold,
-    alignItems: 'center', justifyContent: 'center',
-    shadowColor: Colors.gold,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.7,
-    shadowRadius: 12,
-  },
-  capText: {
-    fontFamily: 'Lora_700Bold', fontSize: 22, color: Colors.gold,
-  },
-
-  chuteWrap: {
-    position: 'absolute',
-    bottom: CHAMBER_SIZE * 0.05,
-    right: CHAMBER_SIZE * 0.12,
-    width: 18, height: 18,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  chuteHole: {
-    width: 22, height: 22, borderRadius: 11,
-    backgroundColor: Colors.gold,
-    shadowColor: Colors.gold,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 1,
-    shadowRadius: 14,
-  },
-
-  activeBall: {
-    position: 'absolute',
-    width: BALL_SIZE,
-    height: BALL_SIZE,
-    left: CHAMBER_RADIUS - BALL_SIZE / 2,
-    top: CHAMBER_RADIUS - BALL_SIZE / 2,
-    zIndex: 20,
-  },
-
-  sparkleAnchor: {
-    position: 'absolute',
-    width: 0,
-    height: 0,
+    top: '50%', left: '50%',
+    marginLeft: -22, marginTop: -22,
+    width: 44, height: 44,
     zIndex: 30,
   },
-  sparkle: {
+  coinParticleImg: {
+    width: '100%', height: '100%',
+  },
+
+  // Stage hosts the win halo + reel frame; the halo sits behind everything.
+  // flex:1 lets the rack absorb the available vertical space between the
+  // header and footer, so the spin button is always on screen.
+  reelStage: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  winHalo: {
     position: 'absolute',
+    width: '120%',
+    height: '160%',
+    zIndex: 0,
+  },
+  // Reel rack now sits inside the ornate wood reelFrame.png. The image
+  // stretches to fit the rack box; we add inner padding so the spinning
+  // reels sit in the frame's interior cavity rather than over its border.
+  reelRackFrame: {
+    marginHorizontal: Spacing.sm,
+    marginVertical: Spacing.sm,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  reelRackFrameImage: {
+    borderRadius: Radius.md,
+  },
+  reelRack: {
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+  },
+  // Wider gap so each reel reads as its own distinct column on the rack.
+  reelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+  },
+  reelColumn: {
+    alignItems: 'center',
+    gap: 4,
+  },
+  reelDot: {
     width: 8, height: 8, borderRadius: 4,
+    backgroundColor: Colors.surfaceAlt,
+    borderWidth: 1, borderColor: Colors.border,
+    marginTop: 2,
+  },
+  // Hit = the reel landed on the user's actual blessed number for this slot.
+  // Miss = a random number filled in; rendered red so the luck score is
+  // legible at a glance ("which slots blessed me?").
+  reelDotHit: {
     backgroundColor: Colors.gold,
-    marginLeft: -4, marginTop: -4,
+    borderColor: Colors.gold,
     shadowColor: Colors.gold,
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.9,
-    shadowRadius: 6,
+    shadowRadius: 8,
+  },
+  reelDotMiss: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primaryDark,
+  },
+  reelIndex: {
+    fontFamily: 'SourceSans3_600SemiBold',
+    fontSize: 11, letterSpacing: 1.5, color: Colors.gold,
+    ...READ_SHADOW,
   },
 
+  // Countdown
   countdownOverlay: {
     position: 'absolute',
-    width: CHAMBER_SIZE,
-    height: CHAMBER_SIZE,
-    alignItems: 'center',
-    justifyContent: 'center',
+    top: 0, left: 0, right: 0, bottom: 0,
+    alignItems: 'center', justifyContent: 'center',
     zIndex: 50,
   },
   countdownText: {
     fontFamily: 'Lora_700Bold',
-    fontSize: 180,
-    fontWeight: '900',
-    color: Colors.gold,
-    letterSpacing: -8,
+    fontSize: 200, fontWeight: '900',
+    color: Colors.gold, letterSpacing: -8,
     textShadowColor: 'rgba(0,0,0,0.7)',
     textShadowOffset: { width: 0, height: 4 },
     textShadowRadius: 16,
@@ -829,13 +873,10 @@ const styles = StyleSheet.create({
 
   callout: {
     position: 'absolute',
-    top: '46%',
-    alignSelf: 'center',
-    paddingHorizontal: 18,
-    paddingVertical: 10,
+    top: '50%', alignSelf: 'center',
+    paddingHorizontal: 18, paddingVertical: 10,
     backgroundColor: Colors.background,
-    borderWidth: 1.5,
-    borderColor: Colors.gold,
+    borderWidth: 1.5, borderColor: Colors.gold,
     borderRadius: Radius.sm,
     shadowColor: Colors.gold,
     shadowOffset: { width: 0, height: 0 },
@@ -845,91 +886,81 @@ const styles = StyleSheet.create({
   },
   calloutText: {
     fontFamily: 'SourceSans3_600SemiBold',
-    fontSize: 18,
-    fontWeight: '900',
-    letterSpacing: 0.5,
-    color: Colors.gold,
-  },
-
-  slotsRow: {
-    flexDirection: 'row',
-    gap: 6,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.lg,
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-  },
-  slot: {
-    width: SLOT_BALL_SIZE,
-    height: SLOT_BALL_SIZE + 18,
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-  },
-  slotRing: {
-    width: SLOT_BALL_SIZE,
-    height: SLOT_BALL_SIZE,
-    borderRadius: SLOT_BALL_SIZE / 2,
-    borderWidth: 1.5,
-    borderColor: Colors.border,
-    borderStyle: 'dashed',
-    backgroundColor: Colors.surface,
-  },
-  slotGlow: {
-    position: 'absolute',
-    top: 0,
-    width: SLOT_BALL_SIZE,
-    height: SLOT_BALL_SIZE,
-    borderRadius: SLOT_BALL_SIZE / 2,
-    backgroundColor: Colors.gold,
-    opacity: 0,
-  },
-  slotIdx: {
-    fontFamily: 'SourceSans3_600SemiBold',
-    fontSize: 9,
-    letterSpacing: 1.5,
-    color: Colors.gold,
-    marginTop: 4,
+    fontSize: 18, fontWeight: '900', letterSpacing: 0.5, color: Colors.gold,
   },
 
   footer: {
-    paddingHorizontal: Spacing.xl,
-    paddingBottom: Spacing.xxl,
-    paddingTop: Spacing.md,
-    gap: Spacing.sm,
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.md,
+    paddingTop: Spacing.xs,
+    gap: 6,
+  },
+  // Ticker stage — replaces the wood-frame backing. Shows label PNGs
+  // (READY / SPINNING / BLESSED) and the running count.
+  tickerStage: {
+    height: 56,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 6,
+  },
+  tickerStateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  tickerLabel: {
+    width: 220,
+    height: 48,
   },
   progress: {
     fontFamily: 'SourceSans3_600SemiBold',
-    fontSize: 11, letterSpacing: 2, color: Colors.gold,
-    textAlign: 'center', marginBottom: Spacing.sm,
+    fontSize: 16, letterSpacing: 2, color: Colors.gold,
+    textAlign: 'center',
+    ...READ_SHADOW,
   },
   finaleText: {
-    fontFamily: 'SourceSans3_600SemiBold',
-    fontSize: 18, fontWeight: '900', letterSpacing: 4,
+    fontFamily: 'Cinzel_800ExtraBold',
+    fontSize: 18, letterSpacing: 2,
     color: Colors.gold, textAlign: 'center',
-    textShadowColor: Colors.gold,
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 12,
-    marginBottom: Spacing.sm,
+    ...READ_SHADOW,
   },
-  cta: {
+  // PNG-backed CTA buttons — the artwork carries all the chrome, label,
+  // and shadow so we don't add additional borders/backgrounds in RN.
+  imageCtaWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  imageCta: {
+    width: '100%',
+    height: 64,
+  },
+  // Small "respin count" pip overlaid on the RESPIN MISSES button.
+  respinCountChip: {
+    position: 'absolute',
+    top: 8, right: 18,
+    minWidth: 28, height: 28, borderRadius: 14,
+    paddingHorizontal: 6,
+    backgroundColor: '#0D0D12',
+    borderWidth: 2, borderColor: '#FFD24F',
     alignItems: 'center', justifyContent: 'center',
-    backgroundColor: Colors.gold,
-    borderRadius: Radius.md, paddingVertical: 18,
-    shadowColor: Colors.gold,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.5, shadowRadius: 16, elevation: 8,
+    shadowColor: '#FFD24F', shadowOpacity: 0.9,
+    shadowOffset: { width: 0, height: 0 }, shadowRadius: 6,
   },
-  ctaWaiting: {
-    backgroundColor: Colors.surface, shadowOpacity: 0,
+  respinCountText: {
+    fontFamily: 'Cinzel_800ExtraBold',
+    fontSize: 14, color: '#FFD24F',
+    includeFontPadding: false,
   },
-  ctaLabel: {
-    fontFamily: 'SourceSans3_600SemiBold',
-    fontSize: 17, fontWeight: '900', letterSpacing: 0.5, color: Colors.background,
+  landedActions: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
   },
-  ctaLabelWaiting: { color: Colors.textMuted },
   disclaimer: {
     fontFamily: 'SourceSans3_400Regular',
-    fontSize: 11, color: Colors.textMuted,
+    fontSize: 12, color: Colors.cream,
     textAlign: 'center', fontStyle: 'italic', marginTop: 4,
+    ...READ_SHADOW,
   },
 });

@@ -51,7 +51,19 @@ const KEYS = {
 };
 
 const MAX_READINGS = 50;
-export const FREE_DRAWS_PER_DAY = 1;
+// PROTOTYPE_MODE companion: when true, the once-a-day reveal lock and the
+// daily-spin cap are both disarmed so UX flows can be retried back-to-back.
+// Flip to false before TestFlight / App Store submission.
+export const BYPASS_DAILY_LOCK = true;
+
+// Slot-machine economy. Each spin counts against today's allowance; per-slot
+// luck decides whether each landed number matches the user's "ideal" blessed
+// number from deriveFromProfile or comes up random. Premium = unlimited
+// spins + guaranteed luck.
+export const FREE_SPINS_PER_DAY = 3;
+export const PREMIUM_SPINS_PER_DAY = 99;
+export const LUCK_FREE = 0.4;     // ~40% chance per slot lands blessed
+export const LUCK_PREMIUM = 1.0;  // every slot lands blessed
 
 // Readings
 
@@ -127,6 +139,7 @@ function todayString(): string {
 }
 
 export async function getTodayDrawCount(): Promise<number> {
+  if (BYPASS_DAILY_LOCK) return 0;
   const raw = await AsyncStorage.getItem(KEYS.DRAW_RECORD);
   if (!raw) return 0;
   try {
@@ -203,6 +216,7 @@ export interface TodayReading {
 }
 
 export async function getTodayReading(): Promise<TodayReading | null> {
+  if (BYPASS_DAILY_LOCK) return null;
   const raw = await AsyncStorage.getItem(KEYS.TODAY_READING);
   if (!raw) return null;
   try {
